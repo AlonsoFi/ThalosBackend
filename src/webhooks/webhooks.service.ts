@@ -9,10 +9,12 @@ import { AGREEMENT_EVENTS } from '../common/events/agreement-events.constants';
 import { validateTransition } from '../agreements/agreement.validator';
 import { RetryQueueService } from '../retry-queue/retry-queue.service';
 import { RetryJobType } from '../retry-queue/retry-queue.types';
+import { MilestoneSyncWebhookHandler } from '../milestone-sync/milestone-sync-webhook.handler';
+import { TW_MILESTONE_EVENTS } from '../milestone-sync/milestone-sync.constants';
 import type { TrustlessWorkEventDto } from './dto/trustless-work-event.dto';
 
 interface EventConfig {
-  action: 'status_update' | 'milestone_update' | 'info';
+  action: 'status_update' | 'milestone_update' | 'milestone_sync' | 'info';
   targetStatus?: string;
 }
 
@@ -38,6 +40,10 @@ const TW_EVENT_MAP: Record<string, EventConfig> = {
   'escrow.milestone_updated': { action: 'milestone_update' },
   'escrow.dispute_created': { action: 'status_update', targetStatus: 'disputed' },
   'dispute.created': { action: 'status_update', targetStatus: 'disputed' },
+  'milestone.completed': { action: 'milestone_sync' },
+  'milestone.approved': { action: 'milestone_sync' },
+  'milestone.rejected': { action: 'milestone_sync' },
+  'milestone.cancelled': { action: 'milestone_sync' },
 };
 
 @Injectable()
@@ -52,6 +58,7 @@ export class WebhooksService implements OnModuleInit {
     private readonly config: ConfigService,
     private readonly retryQueue: RetryQueueService,
     private readonly activity: AgreementActivityService,
+    private readonly milestoneSyncHandler: MilestoneSyncWebhookHandler,
   ) {
     this.webhookSecret = this.config.get<string>('TRUSTLESS_WORK_WEBHOOK_SECRET', '');
   }
@@ -90,6 +97,15 @@ export class WebhooksService implements OnModuleInit {
     if (!config) {
       this.logger.log(`Unhandled TW event type: "${payload.event}" — skipping`);
       return { handled: false, reason: 'unhandled_event_type' };
+    }
+
+    // milestone_sync events are routed directly (they have their own idempotency/retry logic)
+    if (config.action === 'milestone_sync') {
+      return this.milestoneSyncHandler.handle({
+        event: payload.event,
+        contractId: payload.contractId,
+        data: payload.data as Record<string, unknown> | undefined,
+      });
     }
 
     // Enqueue and ACK immediately — the shared retry queue's poller drives the actual

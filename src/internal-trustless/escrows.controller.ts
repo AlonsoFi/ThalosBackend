@@ -9,6 +9,7 @@ import {
   Query,
   UseGuards,
 } from '@nestjs/common';
+import { formatUpstreamError } from './escrow-write.helper';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { relayToTrustless } from './trustless-relay.helper';
@@ -51,7 +52,7 @@ export class EscrowsController {
       pageSize: pageSize ?? 5,
       validateOnChain: validateOnChain ?? true,
     });
-    if (result.status >= 400) throw new BadRequestException(result.data);
+    if (result.status >= 400) throw new BadRequestException(formatUpstreamError(result.data));
     return result.data;
   }
 
@@ -78,7 +79,7 @@ export class EscrowsController {
     if (status) query.status = status;
     if (type) query.type = type;
     const result = await relayToTrustless('GET', 'helper/get-escrows-by-role', query);
-    if (result.status >= 400) throw new BadRequestException(result.data);
+    if (result.status >= 400) throw new BadRequestException(formatUpstreamError(result.data));
     return result.data;
   }
 

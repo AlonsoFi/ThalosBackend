@@ -1,5 +1,6 @@
 import { BadRequestException } from '@nestjs/common';
 import { relayToTrustless } from './trustless-relay.helper';
+import { validateAgreement } from '../agreements/agreement.validator';
 import type {
   ApproveMilestoneDto,
   ChangeMilestoneStatusDto,
@@ -87,6 +88,24 @@ function buildAgreementBody(dto: CreateEscrowDto) {
   };
 }
 
+const UPSTREAM_ERROR = 'UPSTREAM_ERROR';
+
+export function formatUpstreamError(data: unknown) {
+  const message =
+    data && typeof data === 'object' && 'message' in data
+      ? String((data as Record<string, unknown>).message)
+      : typeof data === 'string'
+        ? data
+        : JSON.stringify(data);
+  return {
+    success: false,
+    error: {
+      code: UPSTREAM_ERROR,
+      details: [{ field: 'upstream', code: UPSTREAM_ERROR, message }],
+    },
+  };
+}
+
 /**
  * POST a Trustless Work y devuelve la respuesta tal cual (p. ej. { unsignedTransaction }).
  * Lanza BadRequestException si el upstream falla.
@@ -94,7 +113,7 @@ function buildAgreementBody(dto: CreateEscrowDto) {
 async function relayWrite(path: string, body: unknown): Promise<unknown> {
   const result = await relayToTrustless('POST', path, undefined, body);
   if (result.status >= 400) {
-    throw new BadRequestException(result.data);
+    throw new BadRequestException(formatUpstreamError(result.data));
   }
   return result.data;
 }
@@ -106,6 +125,32 @@ async function relayWrite(path: string, body: unknown): Promise<unknown> {
 export function createEscrow(dto: CreateEscrowDto): Promise<unknown> {
   const path =
     dto.serviceType === 'multi-release' ? 'deployer/multi-release' : 'deployer/single-release';
+
+  // Validate the agreement payload against the centralized validator before
+  // forwarding to Trustless Work. This ensures the same rules (amount, milestone
+  // sums, agreement_type) apply to TW write paths as they do to /agreements.
+  const isMulti = dto.serviceType === 'multi-release';
+  const milestones = dto.milestones.map((m) => ({
+    description: m.description,
+    amount: m.amount ?? null,
+    status: m.status ?? 'pending',
+  }));
+  const agreementInput = {
+    title: dto.title,
+    description: dto.description,
+    amount: isMulti
+      ? milestones.reduce((sum, m) => sum + (m.amount ? Number(m.amount) : 0), 0).toFixed(2)
+      : dto.amount,
+    asset: 'USDC',
+    agreement_type: isMulti ? 'multi' : 'single',
+    milestones,
+    participants: [{ wallet_address: dto.signer, role: 'payer' }],
+  };
+  const validation = validateAgreement(agreementInput);
+  if (!validation.success) {
+    throw new BadRequestException({ success: false, error: validation.error });
+  }
+
   return relayWrite(path, buildAgreementBody(dto));
 }
 

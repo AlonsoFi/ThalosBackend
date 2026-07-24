@@ -530,9 +530,7 @@ describe('AgreementsService lifecycle enforcement (business rules)', () => {
         ],
       });
 
-      await expect(move(id, 'completed')).rejects.toThrow(
-        'All milestones must be approved or released before the agreement can be completed',
-      );
+      await expect(move(id, 'completed')).rejects.toThrow(BadRequestException);
       expect(db.agreement(id).status).toBe('in_review');
       expect(db.agreement(id).completed_at).toBeUndefined();
       expect(emit).not.toHaveBeenCalled();

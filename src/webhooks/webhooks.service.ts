@@ -129,9 +129,6 @@ export class WebhooksService {
     payload: TrustlessWorkEventDto,
     targetStatus: string,
   ): Promise<void> {
-    // fail-open: SELECT returns null for transient DB errors or missing agreement →
-    // validation is skipped, the UPDATE+neq guard below acts as the real source of truth.
-    // fail-closed: SELECT succeeds with a known status → validateTransition gates the write.
     const { data: current, error: selectError } = await this.supabase
       .getClient()
       .from('agreements')
@@ -139,9 +136,10 @@ export class WebhooksService {
       .eq('contract_id', payload.contractId)
       .maybeSingle();
     if (selectError) {
-      this.logger.warn(
-        `Validation SELECT failed for contractId="${payload.contractId}": ${selectError.message} — proceeding fail-open`,
+      this.logger.error(
+        `Validation SELECT failed for contractId="${payload.contractId}": ${selectError.message}`,
       );
+      throw new Error(selectError.message);
     }
     if (current) {
       const transitionValidation = validateTransition(current.status as string, targetStatus);

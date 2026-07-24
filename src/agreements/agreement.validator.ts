@@ -1,5 +1,4 @@
 import {
-  AGREEMENT_STATUSES,
   AGREEMENT_TRANSITIONS,
   isAgreementStatus,
   type AgreementStatus,
@@ -73,7 +72,11 @@ export function validateAgreement(input: AgreementInput): ValidationResult {
     addError(errors, 'title', 'REQUIRED', 'Title is required and must be non-empty');
   }
 
-  if (input.description !== undefined && input.description !== null && input.description.trim().length === 0) {
+  if (
+    input.description !== undefined &&
+    input.description !== null &&
+    input.description.trim().length === 0
+  ) {
     addError(errors, 'description', 'INVALID', 'Description must be non-empty if provided');
   }
 
@@ -91,12 +94,22 @@ export function validateAgreement(input: AgreementInput): ValidationResult {
     for (let i = 0; i < milestones.length; i++) {
       const m = milestones[i];
       if (!m.description || m.description.trim().length === 0) {
-        addError(errors, `milestones[${i}].description`, 'REQUIRED', 'Milestone description must be non-empty');
+        addError(
+          errors,
+          `milestones[${i}].description`,
+          'REQUIRED',
+          'Milestone description must be non-empty',
+        );
       }
       if (m.amount === undefined || m.amount === null) {
         addError(errors, `milestones[${i}].amount`, 'REQUIRED', 'Milestone amount is required');
       } else if (!isValidPositiveNumeric(m.amount)) {
-        addError(errors, `milestones[${i}].amount`, 'INVALID_AMOUNT', 'Milestone amount must be a positive numeric string');
+        addError(
+          errors,
+          `milestones[${i}].amount`,
+          'INVALID_AMOUNT',
+          'Milestone amount must be a positive numeric string',
+        );
       }
     }
 
@@ -138,8 +151,16 @@ export function validateAgreement(input: AgreementInput): ValidationResult {
     addError(errors, 'participants', 'REQUIRED', 'At least one participant is required');
   } else {
     for (let i = 0; i < input.participants.length; i++) {
-      if (!input.participants[i].wallet_address || input.participants[i].wallet_address.trim().length === 0) {
-        addError(errors, `participants[${i}].wallet_address`, 'REQUIRED', 'Participant wallet address must be non-empty');
+      if (
+        !input.participants[i].wallet_address ||
+        input.participants[i].wallet_address.trim().length === 0
+      ) {
+        addError(
+          errors,
+          `participants[${i}].wallet_address`,
+          'REQUIRED',
+          'Participant wallet address must be non-empty',
+        );
       }
     }
   }
@@ -178,19 +199,38 @@ export function validateAgreementConsistency(agreement: AgreementSnapshot): Vali
   const errors: ValidationErrorDetail[] = [];
 
   if (!isValidPositiveNumeric(agreement.amount)) {
-    addError(errors, 'amount', 'INCONSISTENT_AMOUNT', 'Agreement amount is not a positive numeric string');
+    addError(
+      errors,
+      'amount',
+      'INCONSISTENT_AMOUNT',
+      'Agreement amount is not a positive numeric string',
+    );
   }
 
   const milestones = agreement.milestones ?? [];
   for (let i = 0; i < milestones.length; i++) {
     const m = milestones[i];
-    if (m.description !== undefined && m.description !== null && m.description.trim().length === 0) {
-      addError(errors, `milestones[${i}].description`, 'INCONSISTENT', 'Milestone description is empty');
+    if (
+      m.description !== undefined &&
+      m.description !== null &&
+      m.description.trim().length === 0
+    ) {
+      addError(
+        errors,
+        `milestones[${i}].description`,
+        'INCONSISTENT',
+        'Milestone description is empty',
+      );
     }
     if (m.amount === undefined || m.amount === null) {
       addError(errors, `milestones[${i}].amount`, 'INCONSISTENT', 'Milestone amount is missing');
     } else if (!isValidPositiveNumeric(m.amount)) {
-      addError(errors, `milestones[${i}].amount`, 'INCONSISTENT_AMOUNT', 'Milestone amount is not a positive numeric string');
+      addError(
+        errors,
+        `milestones[${i}].amount`,
+        'INCONSISTENT_AMOUNT',
+        'Milestone amount is not a positive numeric string',
+      );
     }
   }
 

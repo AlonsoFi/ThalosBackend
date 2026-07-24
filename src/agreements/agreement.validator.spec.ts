@@ -5,7 +5,11 @@ import {
   type AgreementInput,
   type AgreementSnapshot,
 } from './agreement.validator';
-import { AGREEMENT_STATUSES, AGREEMENT_TRANSITIONS, type AgreementStatus } from './agreement-lifecycle';
+import {
+  AGREEMENT_STATUSES,
+  AGREEMENT_TRANSITIONS,
+  type AgreementStatus,
+} from './agreement-lifecycle';
 
 const VALID_INPUT: AgreementInput = {
   title: 'Test agreement',
@@ -191,7 +195,9 @@ describe('validateAgreement', () => {
       const amountErrors = result.error!.details.filter((d) => d.field === 'milestones[0].amount');
       expect(amountErrors).toHaveLength(1);
       expect(amountErrors[0].code).toBe('REQUIRED');
-      const descErrors = result.error!.details.filter((d) => d.field === 'milestones[1].description');
+      const descErrors = result.error!.details.filter(
+        (d) => d.field === 'milestones[1].description',
+      );
       expect(descErrors).toHaveLength(0);
     });
 

@@ -54,6 +54,9 @@ function buildService(deps: MockDeps = {}): MockedWebhooksService {
     payload,
   }));
   const retryQueue = { enqueue, registerHandler };
+  const activity = {
+    logActivity: jest.fn().mockResolvedValue(undefined),
+  };
 
   const svc = new (WebhooksService as unknown as new (...args: unknown[]) => WebhooksService)(
     supabase,
@@ -61,6 +64,7 @@ function buildService(deps: MockDeps = {}): MockedWebhooksService {
     notifications,
     config,
     retryQueue,
+    activity,
   ) as MockedWebhooksService;
 
   svc._emit = emit;

@@ -13,6 +13,7 @@ import { RetryQueueService } from '../retry-queue/retry-queue.service';
 import { RetryJobStatus, RetryJobType } from '../retry-queue/retry-queue.types';
 import { WebhooksService } from '../webhooks/webhooks.service';
 import { NotificationsService } from '../notifications/notifications.service';
+import { AgreementActivityService } from '../agreements/agreement-activity.service';
 
 // ---------------------------------------------------------------------------
 // Generic in-memory Supabase fixture (multiple tables: retry_jobs, auth_users,
@@ -393,6 +394,7 @@ describe('retry queue (integration) — WebhooksService reuses the shared queue'
       { notifyDisputeOpened: jest.fn() } as unknown as NotificationsService,
       { get: () => 'test-secret' } as unknown as ConfigService,
       localRetryQueue,
+      new AgreementActivityService(localStore as unknown as SupabaseService),
     );
     webhooksService.onModuleInit();
 

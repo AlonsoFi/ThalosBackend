@@ -17,6 +17,7 @@ import { WalletsModule } from './wallets/wallets.module';
 import { EventsModule } from './events/events.module';
 import { WebhooksModule } from './webhooks/webhooks.module';
 import { RetryQueueModule } from './retry-queue/retry-queue.module';
+import { VerificationModule } from './verification/verification.module';
 import { KybModule } from './kyb/kyb.module';
 
 @Module({
@@ -38,6 +39,7 @@ import { KybModule } from './kyb/kyb.module';
     WalletsModule,
     EventsModule,
     WebhooksModule,
+    VerificationModule,
     KybModule,
   ],
   controllers: [RootController],

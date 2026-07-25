@@ -8,6 +8,7 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { SupabaseService } from '../supabase/supabase.service';
 import { AgreementsService } from '../agreements/agreements.service';
 import { validateTransition } from '../agreements/agreement.validator';
+import { AgreementActivityService } from '../agreements/agreement-activity.service';
 import { DISPUTE_OPENED, DISPUTE_RESOLVED } from '../common/constants/notification-events';
 import {
   OpenDisputeDto,
@@ -47,6 +48,7 @@ export class DisputesService {
     private readonly supabase: SupabaseService,
     private readonly agreements: AgreementsService,
     private readonly eventEmitter: EventEmitter2,
+    private readonly activity: AgreementActivityService,
   ) {}
 
   private async walletForUserId(userId: string): Promise<string | null> {
@@ -131,34 +133,28 @@ export class DisputesService {
       return { dispute: null, error: error.message };
     }
 
-    // Capture the agreement's status before moving it to `disputed`, so the
-    // activity entry records the previous/new state of the transition.
-    const { data: agreementRow } = await this.supabase
-      .getClient()
-      .from('agreements')
-      .select('status')
-      .eq('id', dto.agreement_id)
-      .maybeSingle();
-    const previousStatus = (agreementRow?.status as string | undefined) ?? null;
-
-    const transitionValidation = validateTransition(agreementRow?.status as string, 'disputed');
-    if (!transitionValidation.success) {
-      throw new BadRequestException({ success: false, error: transitionValidation.error });
+    // Route Agreement status change through the shared side-effect path
+    // (activity log + domain events) so dispute-driven updates match normal updates.
+    const statusResult = await this.agreements.applyStatusChange(
+      dto.agreement_id,
+      dto.opened_by,
+      'disputed',
+      {
+        enforceTransition: true,
+        activityDetails: { dispute_id: dispute.id, reason: dto.reason, source: 'dispute' },
+      },
+    );
+    if (!statusResult.success) {
+      throw new BadRequestException(statusResult.error || 'Invalid status transition');
     }
 
-    // Update agreement status to disputed
-    await this.supabase
-      .getClient()
-      .from('agreements')
-      .update({ status: 'disputed', updated_at: new Date().toISOString() })
-      .eq('id', dto.agreement_id);
-
-    await this.agreements.logAgreementActivity(
+    // Dispute-specific activity entry (parity with existing audit vocabulary)
+    await this.activity.logActivity(
       dto.agreement_id,
       dto.opened_by,
       'dispute_opened',
       { dispute_id: dispute.id, reason: dto.reason },
-      { previousState: previousStatus, newState: 'disputed' },
+      { previousState: statusResult.fromStatus ?? null, newState: 'disputed' },
     );
 
     this.eventEmitter.emit(DISPUTE_OPENED, {
@@ -203,11 +199,14 @@ export class DisputesService {
       return { success: false, error: error.message };
     }
 
-    await this.agreements.logAgreementActivity(
+    await this.activity.logActivity(
       dispute.agreement_id,
       dto.resolver_wallet,
       'dispute_resolver_assigned',
-      { dispute_id: disputeId, resolver_wallet: dto.resolver_wallet },
+      {
+        dispute_id: disputeId,
+        resolver_wallet: dto.resolver_wallet,
+      },
     );
 
     return { success: true, error: null };
@@ -269,32 +268,26 @@ export class DisputesService {
       })
       .eq('id', disputeId);
 
-    // Capture the agreement's status before moving it to `resolved`.
-    const { data: agreementRow } = await this.supabase
-      .getClient()
-      .from('agreements')
-      .select('status')
-      .eq('id', dispute.agreement_id)
-      .maybeSingle();
-    const previousStatus = (agreementRow?.status as string | undefined) ?? 'disputed';
-
-    const transitionValidation = validateTransition(agreementRow?.status as string, 'resolved');
-    if (!transitionValidation.success) {
-      throw new BadRequestException({ success: false, error: transitionValidation.error });
+    // Shared side-effect path for Agreement status → resolved
+    const statusResult = await this.agreements.applyStatusChange(
+      dispute.agreement_id,
+      dto.resolved_by,
+      'resolved',
+      {
+        enforceTransition: true,
+        activityDetails: {
+          dispute_id: disputeId,
+          payer_percentage: dto.payer_percentage,
+          payee_percentage: dto.payee_percentage,
+          source: 'dispute',
+        },
+      },
+    );
+    if (!statusResult.success) {
+      return { resolution: null, error: statusResult.error || 'Failed to mark agreement resolved' };
     }
 
-    // Update agreement status
-    await this.supabase
-      .getClient()
-      .from('agreements')
-      .update({
-        status: 'resolved',
-        completed_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', dispute.agreement_id);
-
-    await this.agreements.logAgreementActivity(
+    await this.activity.logActivity(
       dispute.agreement_id,
       dto.resolved_by,
       'dispute_resolved',
@@ -304,7 +297,7 @@ export class DisputesService {
         payee_percentage: dto.payee_percentage,
         resolution_notes: dto.resolution_notes,
       },
-      { previousState: previousStatus, newState: 'resolved' },
+      { previousState: statusResult.fromStatus ?? 'disputed', newState: 'resolved' },
     );
 
     this.eventEmitter.emit(DISPUTE_RESOLVED, {
@@ -354,7 +347,7 @@ export class DisputesService {
       return { success: false, error: error.message };
     }
 
-    // Validate and revert agreement status to active
+    // Validate the transition before delegating to applyStatusChange
     const { data: agreement } = await this.supabase
       .getClient()
       .from('agreements')
@@ -366,18 +359,25 @@ export class DisputesService {
       throw new BadRequestException({ success: false, error: transitionValidation.error });
     }
 
-    await this.supabase
-      .getClient()
-      .from('agreements')
-      .update({ status: 'active', updated_at: new Date().toISOString() })
-      .eq('id', dispute.agreement_id);
+    // Shared side-effect path: dispute cancelled → agreement back to active
+    const statusResult = await this.agreements.applyStatusChange(
+      dispute.agreement_id,
+      dto.cancelled_by,
+      'active',
+      {
+        activityDetails: { dispute_id: disputeId, source: 'dispute_cancel' },
+      },
+    );
+    if (!statusResult.success) {
+      return { success: false, error: statusResult.error || 'Failed to restore agreement status' };
+    }
 
-    await this.agreements.logAgreementActivity(
+    await this.activity.logActivity(
       dispute.agreement_id,
       dto.cancelled_by,
       'dispute_cancelled',
       { dispute_id: disputeId },
-      { previousState: 'disputed', newState: 'active' },
+      { previousState: statusResult.fromStatus ?? 'disputed', newState: 'active' },
     );
 
     return { success: true, error: null };

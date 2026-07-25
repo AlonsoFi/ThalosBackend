@@ -15,6 +15,14 @@ import { AuthModule } from '../auth/auth.module';
 import { EscrowsController } from '../internal-trustless/escrows.controller';
 import { relayToTrustless } from '../internal-trustless/trustless-relay.helper';
 import { NotificationsService } from '../notifications/notifications.service';
+import { RetryQueueService } from '../retry-queue/retry-queue.service';
+import {
+  type EnqueueOptions,
+  type RetryJob,
+  type RetryJobHandler,
+  RetryJobStatus,
+  RetryJobType,
+} from '../retry-queue/retry-queue.types';
 import { SupabaseService } from '../supabase/supabase.service';
 import { WebhooksController } from '../webhooks/webhooks.controller';
 import { WebhooksService } from '../webhooks/webhooks.service';
@@ -282,10 +290,90 @@ class InMemorySupabase {
   }
 }
 
+class InMemoryRetryQueue {
+  readonly jobs: RetryJob[] = [];
+  private readonly handlers = new Map<RetryJobType, RetryJobHandler>();
+  private sequence = 1;
+
+  reset() {
+    this.jobs.splice(0);
+    this.sequence = 1;
+  }
+
+  registerHandler<TPayload = Record<string, unknown>>(
+    jobType: RetryJobType,
+    handler: RetryJobHandler<TPayload>,
+  ) {
+    this.handlers.set(jobType, handler as RetryJobHandler);
+  }
+
+  enqueue<TPayload extends Record<string, unknown>>(
+    jobType: RetryJobType,
+    payload: TPayload,
+    idempotencyKey: string,
+    options: EnqueueOptions = {},
+  ): Promise<RetryJob> {
+    const existing = this.jobs.find((job) => job.idempotency_key === idempotencyKey);
+    if (existing) return Promise.resolve(existing);
+
+    const now = new Date().toISOString();
+    const job: RetryJob = {
+      id: `retry-job-${this.sequence++}`,
+      job_type: jobType,
+      idempotency_key: idempotencyKey,
+      payload,
+      status: RetryJobStatus.PENDING,
+      attempts: 0,
+      max_attempts: options.maxAttempts ?? 5,
+      next_attempt_at: now,
+      last_error: null,
+      created_at: now,
+      updated_at: now,
+      completed_at: null,
+    };
+    this.jobs.push(job);
+    return Promise.resolve(job);
+  }
+
+  async flushNext(): Promise<RetryJob> {
+    const job = this.jobs.find(({ status }) => status === RetryJobStatus.PENDING);
+    if (!job) throw new Error('No pending retry job to process');
+
+    const handler = this.handlers.get(job.job_type);
+    job.status = RetryJobStatus.PROCESSING;
+    job.attempts += 1;
+    job.updated_at = new Date().toISOString();
+
+    if (!handler) {
+      job.status = RetryJobStatus.FAILED;
+      job.last_error = `No handler registered for ${job.job_type}`;
+      job.completed_at = new Date().toISOString();
+      return job;
+    }
+
+    try {
+      await handler(job.payload, job.attempts);
+      job.status = RetryJobStatus.SUCCEEDED;
+      job.last_error = null;
+      job.completed_at = new Date().toISOString();
+    } catch (error) {
+      job.last_error = error instanceof Error ? error.message : String(error);
+      job.status =
+        job.attempts >= job.max_attempts ? RetryJobStatus.FAILED : RetryJobStatus.PENDING;
+      if (job.status === RetryJobStatus.FAILED) {
+        job.completed_at = new Date().toISOString();
+      }
+    }
+
+    job.updated_at = new Date().toISOString();
+    return job;
+  }
+}
+
 describe('Trustless Work end-to-end integration', () => {
   let app: INestApplication;
   let supabase: InMemorySupabase;
-  let webhooksService: WebhooksService;
+  let retryQueue: InMemoryRetryQueue;
   const eventEmitter = { emit: jest.fn() };
   const notifications = { notifyDisputeOpened: jest.fn().mockResolvedValue(undefined) };
   const relayMock = jest.mocked(relayToTrustless);
@@ -293,6 +381,7 @@ describe('Trustless Work end-to-end integration', () => {
   beforeAll(async () => {
     process.env.JWT_SECRET = JWT_SECRET;
     supabase = new InMemorySupabase();
+    retryQueue = new InMemoryRetryQueue();
 
     const moduleRef = await Test.createTestingModule({
       imports: [AuthModule],
@@ -301,6 +390,7 @@ describe('Trustless Work end-to-end integration', () => {
         AgreementsService,
         AgreementActivityService,
         WebhooksService,
+        { provide: RetryQueueService, useValue: retryQueue },
         { provide: SupabaseService, useValue: supabase },
         { provide: EventEmitter2, useValue: eventEmitter },
         { provide: NotificationsService, useValue: notifications },
@@ -314,9 +404,6 @@ describe('Trustless Work end-to-end integration', () => {
         },
       ],
     }).compile();
-
-    webhooksService = moduleRef.get(WebhooksService);
-    (webhooksService as unknown as { baseRetryDelay: number }).baseRetryDelay = 1;
 
     app = moduleRef.createNestApplication({ rawBody: true });
     app.setGlobalPrefix('v1');
@@ -332,6 +419,7 @@ describe('Trustless Work end-to-end integration', () => {
 
   beforeEach(() => {
     supabase.reset();
+    retryQueue.reset();
     eventEmitter.emit.mockClear();
     notifications.notifyDisputeOpened.mockClear();
     relayMock.mockReset();
@@ -442,6 +530,9 @@ describe('Trustless Work end-to-end integration', () => {
       .expect(200)
       .expect({ ok: true });
 
+    expect(supabase.tables.agreements.find(({ id }) => id === agreementId)?.status).toBe('pending');
+    await retryQueue.flushNext();
+
     await request(app.getHttpServer())
       .get(`/v1/agreements/by-contract/${LIFECYCLE_CONTRACT_ID}`)
       .set(auth())
@@ -460,6 +551,11 @@ describe('Trustless Work end-to-end integration', () => {
     await postWebhook({ event: 'escrow.released', contractId: LIFECYCLE_CONTRACT_ID })
       .expect(200)
       .expect({ ok: true });
+
+    expect(supabase.tables.agreements.find(({ id }) => id === agreementId)?.status).toBe(
+      'in_review',
+    );
+    await retryQueue.flushNext();
 
     await request(app.getHttpServer())
       .get(`/v1/agreements/by-contract/${LIFECYCLE_CONTRACT_ID}`)
@@ -532,6 +628,16 @@ describe('Trustless Work end-to-end integration', () => {
 
       await postWebhook({ event, contractId: SEEDED_CONTRACT_ID }).expect(200).expect({ ok: true });
 
+      expect(supabase.tables.agreements[0].status).toBe(from);
+      expect(retryQueue.jobs).toEqual([
+        expect.objectContaining({
+          job_type: RetryJobType.WEBHOOK_EVENT_PROCESSING,
+          status: RetryJobStatus.PENDING,
+        }),
+      ]);
+
+      await retryQueue.flushNext();
+
       await request(app.getHttpServer())
         .get(`/v1/agreements/by-contract/${SEEDED_CONTRACT_ID}`)
         .set(auth())
@@ -560,6 +666,9 @@ describe('Trustless Work end-to-end integration', () => {
         .expect(200)
         .expect({ ok: true });
 
+      expect(supabase.tables.agreements[0].milestones[1].status).toBe('pending');
+      await retryQueue.flushNext();
+
       await request(app.getHttpServer())
         .get(`/v1/agreements/by-contract/${SEEDED_CONTRACT_ID}`)
         .set(auth())
@@ -586,44 +695,88 @@ describe('Trustless Work end-to-end integration', () => {
     const payload = { event: 'agreement.created', contractId: SEEDED_CONTRACT_ID };
 
     await postWebhook(payload).expect(200).expect({ ok: true });
-    expect(supabase.tables.agreement_activity).toHaveLength(1);
+    expect(retryQueue.jobs).toHaveLength(1);
+    expect(supabase.tables.agreement_activity).toHaveLength(0);
 
     await postWebhook(payload, signatureFor(JSON.stringify(payload), 'wrong-secret')).expect(401);
+    expect(retryQueue.jobs).toHaveLength(1);
+    expect(supabase.tables.agreement_activity).toHaveLength(0);
+
+    await retryQueue.flushNext();
     expect(supabase.tables.agreement_activity).toHaveLength(1);
   });
 
-  it('recovers after two transient provider failures through withRetry', async () => {
+  it('recovers when the queue retries two transient provider failures', async () => {
     supabase.failNext('agreements', 'update', 'transient provider timeout', 2);
 
     await postWebhook({ event: 'escrow.funded', contractId: SEEDED_CONTRACT_ID })
       .expect(200)
       .expect({ ok: true });
 
+    expect(supabase.tables.agreements[0].status).toBe('pending');
+
+    const firstAttempt = await retryQueue.flushNext();
+    expect(firstAttempt).toMatchObject({
+      status: RetryJobStatus.PENDING,
+      attempts: 1,
+      last_error: 'transient provider timeout',
+    });
+
+    const secondAttempt = await retryQueue.flushNext();
+    expect(secondAttempt).toMatchObject({
+      status: RetryJobStatus.PENDING,
+      attempts: 2,
+      last_error: 'transient provider timeout',
+    });
+
+    const recovered = await retryQueue.flushNext();
+    expect(recovered).toMatchObject({
+      status: RetryJobStatus.SUCCEEDED,
+      attempts: 3,
+      last_error: null,
+    });
     expect(supabase.operationCount('agreements', 'update')).toBe(3);
     expect(supabase.tables.agreements[0].status).toBe('funded');
   });
 
-  it('reports processing_failed after persistent provider failures exhaust retries', async () => {
-    supabase.failNext('agreements', 'update', 'persistent provider outage', 4);
+  it('ACKs immediately while a persistent failure is recorded by the queue after exhaustion', async () => {
+    supabase.failNext('agreements', 'update', 'persistent provider outage', 5);
 
     await postWebhook({ event: 'escrow.funded', contractId: SEEDED_CONTRACT_ID })
       .expect(200)
-      .expect({ ok: false, reason: 'processing_failed' });
+      .expect({ ok: true });
 
-    expect(supabase.operationCount('agreements', 'update')).toBe(4);
+    expect(supabase.tables.agreements[0].status).toBe('pending');
+
+    let exhausted: RetryJob | undefined;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      exhausted = await retryQueue.flushNext();
+    }
+
+    expect(exhausted).toMatchObject({
+      status: RetryJobStatus.FAILED,
+      attempts: 5,
+      last_error: 'persistent provider outage',
+    });
+    expect(supabase.operationCount('agreements', 'update')).toBe(5);
     expect(supabase.tables.agreements[0].status).toBe('pending');
   });
 
-  it('withRetry surfaces the original error after exhausting all attempts', async () => {
-    const operation = jest.fn().mockRejectedValue(new Error('network unavailable'));
-    const retryable = webhooksService as unknown as {
-      withRetry<T>(fn: () => Promise<T>, label: string): Promise<T>;
-    };
+  it('ACKs after enqueue and leaves processing to the registered queue handler', async () => {
+    await postWebhook({ event: 'escrow.funded', contractId: SEEDED_CONTRACT_ID })
+      .expect(200)
+      .expect({ ok: true });
 
-    await expect(retryable.withRetry(operation, 'provider-call')).rejects.toThrow(
-      'network unavailable',
+    expect(supabase.operationCount('agreements', 'update')).toBe(0);
+    expect(supabase.tables.agreements[0].status).toBe('pending');
+    expect(retryQueue.jobs[0]).toMatchObject({
+      job_type: RetryJobType.WEBHOOK_EVENT_PROCESSING,
+      status: RetryJobStatus.PENDING,
+      attempts: 0,
+    });
+    expect(retryQueue.jobs[0].idempotency_key).toMatch(
+      /^webhook:tw-contract-seeded:escrow\.funded:/,
     );
-    expect(operation).toHaveBeenCalledTimes(4);
   });
 
   it('treats a duplicate webhook as idempotent without a second activity or notification', async () => {
@@ -631,6 +784,11 @@ describe('Trustless Work end-to-end integration', () => {
 
     await postWebhook(payload).expect(200).expect({ ok: true });
     await postWebhook(payload).expect(200).expect({ ok: true });
+
+    expect(retryQueue.jobs).toHaveLength(1);
+    expect(supabase.tables.agreements[0].status).toBe('pending');
+
+    await retryQueue.flushNext();
 
     expect(supabase.tables.agreements[0].status).toBe('funded');
     expect(

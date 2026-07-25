@@ -20,6 +20,9 @@ import { EscrowsController } from '../internal-trustless/escrows.controller';
 import { WalletsController } from '../wallets/wallets.controller';
 import { WalletsService } from '../wallets/wallets.service';
 import { WebhooksService } from '../webhooks/webhooks.service';
+import { RetryQueueService } from '../retry-queue/retry-queue.service';
+import { AgreementChatController } from '../agreement-chat/agreement-chat.controller';
+import { AgreementChatService } from '../agreement-chat/agreement-chat.service';
 
 // WalletsService transitively imports @stellar/stellar-sdk, which ships ESM that
 // ts-jest does not transform. The migrated flows under test never exercise
@@ -352,16 +355,30 @@ describe('migrated backend flows (integration)', () => {
     supabase = new InMemorySupabase();
     const moduleRef = await Test.createTestingModule({
       imports: [AuthModule],
-      controllers: [AgreementsController, DisputesController, EscrowsController, WalletsController],
+      controllers: [
+        AgreementsController,
+        DisputesController,
+        EscrowsController,
+        WalletsController,
+        AgreementChatController,
+      ],
       providers: [
         AgreementsService,
         AgreementActivityService,
         DisputesService,
         WalletsService,
+        AgreementChatService,
         { provide: SupabaseService, useValue: supabase },
         { provide: ApiClient, useValue: apiClient },
         { provide: ConfigService, useValue: { get: jest.fn(() => JWT_SECRET) } },
         { provide: EventEmitter2, useValue: { emit: jest.fn() } },
+        {
+          provide: RetryQueueService,
+          useValue: {
+            enqueue: jest.fn().mockResolvedValue({ id: 'job-1' }),
+            registerHandler: jest.fn(),
+          },
+        },
       ],
     }).compile();
 
@@ -1475,14 +1492,26 @@ describe('migrated backend flows (integration)', () => {
       const notifications = { notifyDisputeOpened: notifyDispute };
       const config = { get: jest.fn(() => 'test-webhook-secret') };
 
+      let registeredHandler: Function;
+      const retryQueue = {
+        enqueue: jest.fn().mockImplementation(async (_type: string, payload: unknown) => {
+          if (registeredHandler) await (registeredHandler as (payload: unknown, attempt: number) => Promise<void>)(payload, 1);
+          return { id: 'webhook-job-1' };
+        }),
+        registerHandler: jest.fn().mockImplementation((_type: string, fn: Function) => {
+          registeredHandler = fn;
+        }),
+      };
       const activity = { logActivity: jest.fn().mockResolvedValue(undefined) };
       svc = new (WebhooksService as unknown as new (...args: unknown[]) => WebhooksService)(
         supabase,
         eventEmitter,
         notifications,
         config,
+        retryQueue,
         activity,
       );
+      svc.onModuleInit();
     });
 
     it('rejects an invalid transition (pending → disputed) and does not mutate DB', async () => {

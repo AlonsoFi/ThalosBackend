@@ -145,7 +145,17 @@ export class DisputesService {
       },
     );
     if (!statusResult.success) {
-      throw new BadRequestException(statusResult.error || 'Invalid status transition');
+      throw new BadRequestException({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          details: [{
+            field: 'status',
+            code: 'INVALID_TRANSITION',
+            message: statusResult.error || 'Invalid status transition',
+          }],
+        },
+      });
     }
 
     // Dispute-specific activity entry (parity with existing audit vocabulary)

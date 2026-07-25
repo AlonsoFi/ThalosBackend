@@ -161,7 +161,7 @@ describe('WebhooksService.handleEvent — status transitions', () => {
 
   it('escrow.released → completed: updates DB and emits agreement.completed', async () => {
     const svc = buildService({
-      getClientCalls: [updateClient(null), updateClient(row), insertClient()],
+      getClientCalls: [updateClient({ status: 'in_review' }), updateClient(row), insertClient()],
     });
     const result = await svc.handleEvent({ event: 'escrow.released', contractId: 'c-2' });
     expect(result).toEqual({ handled: true });
@@ -173,7 +173,7 @@ describe('WebhooksService.handleEvent — status transitions', () => {
 
   it('contract.completed → completed: updates DB and emits agreement.completed', async () => {
     const svc = buildService({
-      getClientCalls: [updateClient(null), updateClient(row), insertClient()],
+      getClientCalls: [updateClient({ status: 'in_review' }), updateClient(row), insertClient()],
     });
     const result = await svc.handleEvent({ event: 'contract.completed', contractId: 'c-2' });
     expect(result).toEqual({ handled: true });
@@ -196,7 +196,7 @@ describe('WebhooksService.handleEvent — status transitions', () => {
 
   it('dispute.created → disputed: updates DB and calls notifyDisputeOpened', async () => {
     const svc = buildService({
-      getClientCalls: [updateClient(null), updateClient(row), insertClient()],
+      getClientCalls: [updateClient({ status: 'active' }), updateClient(row), insertClient()],
     });
     const result = await svc.handleEvent({ event: 'dispute.created', contractId: 'c-3' });
     expect(result).toEqual({ handled: true });
@@ -207,7 +207,7 @@ describe('WebhooksService.handleEvent — status transitions', () => {
 
   it('escrow.dispute_created → disputed: updates DB and calls notifyDisputeOpened', async () => {
     const svc = buildService({
-      getClientCalls: [updateClient(null), updateClient(row), insertClient()],
+      getClientCalls: [updateClient({ status: 'active' }), updateClient(row), insertClient()],
     });
     const result = await svc.handleEvent({ event: 'escrow.dispute_created', contractId: 'c-3' });
     expect(result).toEqual({ handled: true });

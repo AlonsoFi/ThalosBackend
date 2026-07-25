@@ -7,6 +7,7 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Test } from '@nestjs/testing';
 import * as jwt from 'jsonwebtoken';
 import request from 'supertest';
+import type { AgreementStatus } from '../agreements/agreement-lifecycle';
 import { AgreementsController } from '../agreements/agreements.controller';
 import { AgreementsService } from '../agreements/agreements.service';
 import { AuthModule } from '../auth/auth.module';
@@ -234,6 +235,12 @@ class InMemorySupabase {
     return this.operations.get(`${table}:${mode}`) ?? 0;
   }
 
+  seedAgreementStatus(status: AgreementStatus) {
+    const agreement = this.tables.agreements.find(({ id }) => id === SEEDED_AGREEMENT_ID);
+    if (!agreement) throw new Error(`Seeded agreement "${SEEDED_AGREEMENT_ID}" not found`);
+    agreement.status = status;
+  }
+
   insert(table: string, row: Row) {
     const inserted = {
       id: row.id ?? `${table}-${this.sequence++}`,
@@ -439,6 +446,15 @@ describe('Trustless Work end-to-end integration', () => {
       .expect(200)
       .expect(({ body }) => expect(body.agreement.status).toBe('funded'));
 
+    for (const status of ['active', 'in_review']) {
+      await request(app.getHttpServer())
+        .patch(`/v1/agreements/${agreementId}/status`)
+        .set(auth())
+        .send({ status, actor_wallet: WALLET })
+        .expect(200)
+        .expect({ success: true, error: null });
+    }
+
     await postWebhook({ event: 'escrow.released', contractId: LIFECYCLE_CONTRACT_ID })
       .expect(200)
       .expect({ ok: true });
@@ -500,31 +516,36 @@ describe('Trustless Work end-to-end integration', () => {
     expect(relayMock.mock.calls[0][3]).not.toHaveProperty('amount');
   });
 
-  it.each([
-    ['escrow.funded', 'funded'],
-    ['escrow.released', 'completed'],
-    ['escrow.disputed', 'disputed'],
-    ['dispute.created', 'disputed'],
-    ['contract.completed', 'completed'],
-    ['contract.cancelled', 'cancelled'],
-  ])('%s synchronizes the agreement to %s and logs the transition', async (event, status) => {
-    await postWebhook({ event, contractId: SEEDED_CONTRACT_ID }).expect(200).expect({ ok: true });
+  it.each<{ event: string; from: AgreementStatus; to: AgreementStatus }>([
+    { event: 'escrow.funded', from: 'pending', to: 'funded' },
+    { event: 'escrow.released', from: 'in_review', to: 'completed' },
+    { event: 'escrow.disputed', from: 'active', to: 'disputed' },
+    { event: 'dispute.created', from: 'in_review', to: 'disputed' },
+    { event: 'contract.completed', from: 'in_review', to: 'completed' },
+    { event: 'contract.cancelled', from: 'active', to: 'cancelled' },
+  ])(
+    '$event synchronizes the legal $from -> $to transition and logs it',
+    async ({ event, from, to }) => {
+      supabase.seedAgreementStatus(from);
 
-    await request(app.getHttpServer())
-      .get(`/v1/agreements/by-contract/${SEEDED_CONTRACT_ID}`)
-      .set(auth())
-      .expect(200)
-      .expect(({ body }) => expect(body.agreement.status).toBe(status));
+      await postWebhook({ event, contractId: SEEDED_CONTRACT_ID }).expect(200).expect({ ok: true });
 
-    expect(supabase.tables.agreement_activity).toEqual([
-      expect.objectContaining({
-        agreement_id: SEEDED_AGREEMENT_ID,
-        actor_wallet: 'trustless-work-webhook',
-        action: `webhook_status_changed_to_${status}`,
-        details: expect.objectContaining({ event, contractId: SEEDED_CONTRACT_ID }),
-      }),
-    ]);
-  });
+      await request(app.getHttpServer())
+        .get(`/v1/agreements/by-contract/${SEEDED_CONTRACT_ID}`)
+        .set(auth())
+        .expect(200)
+        .expect(({ body }) => expect(body.agreement.status).toBe(to));
+
+      expect(supabase.tables.agreement_activity).toEqual([
+        expect.objectContaining({
+          agreement_id: SEEDED_AGREEMENT_ID,
+          actor_wallet: 'trustless-work-webhook',
+          action: `webhook_status_changed_to_${to}`,
+          details: expect.objectContaining({ event, contractId: SEEDED_CONTRACT_ID }),
+        }),
+      ]);
+    },
+  );
 
   it.each(['agreement.milestone_updated', 'escrow.milestone_updated'])(
     '%s synchronizes milestone data and logs the update',

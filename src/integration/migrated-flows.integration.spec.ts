@@ -8,6 +8,8 @@ import * as jwt from 'jsonwebtoken';
 import request from 'supertest';
 import { existsSync, readdirSync, readFileSync, statSync } from 'fs';
 import { join } from 'path';
+import { AgreementChatController } from '../agreement-chat/agreement-chat.controller';
+import { AgreementChatService } from '../agreement-chat/agreement-chat.service';
 import { AuthModule } from '../auth/auth.module';
 import { SupabaseService } from '../supabase/supabase.service';
 import { ApiClient } from '../common/api/api-client';
@@ -339,8 +341,15 @@ describe('migrated backend flows (integration)', () => {
     supabase = new InMemorySupabase();
     const moduleRef = await Test.createTestingModule({
       imports: [AuthModule],
-      controllers: [AgreementsController, DisputesController, EscrowsController, WalletsController],
+      controllers: [
+        AgreementChatController,
+        AgreementsController,
+        DisputesController,
+        EscrowsController,
+        WalletsController,
+      ],
       providers: [
+        AgreementChatService,
         AgreementsService,
         AgreementActivityService,
         DisputesService,

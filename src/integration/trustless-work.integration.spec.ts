@@ -7,6 +7,7 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Test } from '@nestjs/testing';
 import * as jwt from 'jsonwebtoken';
 import request from 'supertest';
+import { AgreementActivityService } from '../agreements/agreement-activity.service';
 import type { AgreementStatus } from '../agreements/agreement-lifecycle';
 import { AgreementsController } from '../agreements/agreements.controller';
 import { AgreementsService } from '../agreements/agreements.service';
@@ -298,6 +299,7 @@ describe('Trustless Work end-to-end integration', () => {
       controllers: [AgreementsController, EscrowsController, WebhooksController],
       providers: [
         AgreementsService,
+        AgreementActivityService,
         WebhooksService,
         { provide: SupabaseService, useValue: supabase },
         { provide: EventEmitter2, useValue: eventEmitter },

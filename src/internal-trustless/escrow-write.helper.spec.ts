@@ -21,7 +21,7 @@ describe('createEscrow — single-release validation', () => {
     await expect(createEscrow(dto as any)).resolves.toBeDefined();
   });
 
-  it('rechaza un payload single-release sin amount raíz', async () => {
+  it('rechaza un payload single-release sin amount raíz', () => {
     const dto = {
       title: 'Test escrow',
       description: 'desc',

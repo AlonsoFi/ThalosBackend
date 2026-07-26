@@ -149,11 +149,13 @@ export class DisputesService {
         success: false,
         error: {
           code: 'VALIDATION_ERROR',
-          details: [{
-            field: 'status',
-            code: 'INVALID_TRANSITION',
-            message: statusResult.error || 'Invalid status transition',
-          }],
+          details: [
+            {
+              field: 'status',
+              code: 'INVALID_TRANSITION',
+              message: statusResult.error || 'Invalid status transition',
+            },
+          ],
         },
       });
     }

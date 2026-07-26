@@ -1492,15 +1492,19 @@ describe('migrated backend flows (integration)', () => {
       const notifications = { notifyDisputeOpened: notifyDispute };
       const config = { get: jest.fn(() => 'test-webhook-secret') };
 
-      let registeredHandler: Function;
+      let registeredHandler: (payload: unknown, attempt: number) => Promise<void>;
       const retryQueue = {
         enqueue: jest.fn().mockImplementation(async (_type: string, payload: unknown) => {
-          if (registeredHandler) await (registeredHandler as (payload: unknown, attempt: number) => Promise<void>)(payload, 1);
+          if (registeredHandler) await registeredHandler(payload, 1);
           return { id: 'webhook-job-1' };
         }),
-        registerHandler: jest.fn().mockImplementation((_type: string, fn: Function) => {
-          registeredHandler = fn;
-        }),
+        registerHandler: jest
+          .fn()
+          .mockImplementation(
+            (_type: string, fn: (payload: unknown, attempt: number) => Promise<void>) => {
+              registeredHandler = fn;
+            },
+          ),
       };
       const activity = { logActivity: jest.fn().mockResolvedValue(undefined) };
       svc = new (WebhooksService as unknown as new (...args: unknown[]) => WebhooksService)(

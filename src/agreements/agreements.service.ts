@@ -11,11 +11,12 @@ import { LinkContractDto } from './dto/link-contract.dto';
 import { UpdateAgreementStatusDto } from './dto/update-status.dto';
 import { UpdateMilestoneDto } from './dto/update-milestone.dto';
 import { AGREEMENT_EVENTS } from '../common/events/agreement-events.constants';
+import { milestonesSatisfyCompletion } from './agreement-lifecycle';
 import {
-  canTransition,
-  invalidTransitionMessage,
-  milestonesSatisfyCompletion,
-} from './agreement-lifecycle';
+  validateAgreement,
+  validateTransition,
+  validateAgreementConsistency,
+} from './agreement.validator';
 import { AgreementActivityService } from './agreement-activity.service';
 
 @Injectable()
@@ -91,6 +92,11 @@ export class AgreementsService {
   }
 
   async create(userId: string, dto: CreateAgreementDto) {
+    const validation = validateAgreement(dto);
+    if (!validation.success) {
+      return { agreement: null, error: validation.error };
+    }
+
     await this.assertActorWallet(userId, dto.created_by);
 
     const createdByProfileId = await this.profileIdByWallet(dto.created_by);
@@ -221,14 +227,26 @@ export class AgreementsService {
 
     const fromStatus = current.status as string;
 
-    if (!canTransition(fromStatus, dto.status)) {
-      throw new BadRequestException(invalidTransitionMessage(fromStatus, dto.status));
+    const transitionValidation = validateTransition(fromStatus, dto.status);
+    if (!transitionValidation.success) {
+      throw new BadRequestException({ success: false, error: transitionValidation.error });
     }
 
     if (dto.status === 'completed' && !milestonesSatisfyCompletion(current.milestones)) {
-      throw new BadRequestException(
-        'All milestones must be approved or released before the agreement can be completed',
-      );
+      throw new BadRequestException({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          details: [
+            {
+              field: 'status',
+              code: 'INVALID_TRANSITION',
+              message:
+                'All milestones must be approved or released before the agreement can be completed',
+            },
+          ],
+        },
+      });
     }
 
     const updates: Record<string, unknown> = {
@@ -289,7 +307,7 @@ export class AgreementsService {
     const { data: agreement, error: fetchError } = await this.supabase
       .getClient()
       .from('agreements')
-      .select('id, title, amount, asset, milestones')
+      .select('id, title, amount, asset, milestones, agreement_type')
       .eq('id', agreementId)
       .single();
 
@@ -323,6 +341,14 @@ export class AgreementsService {
     }
     if (emitsEvidence) {
       milestone.evidence_submitted_at = new Date().toISOString();
+    }
+
+    const consistency = validateAgreementConsistency({
+      amount: agreement.amount,
+      milestones,
+    });
+    if (!consistency.success) {
+      throw new BadRequestException({ success: false, error: consistency.error });
     }
 
     const { error: updateError } = await this.supabase
@@ -516,8 +542,14 @@ export class AgreementsService {
 
     const fromStatus = options.fromStatus ?? (current.status as string);
 
-    if (options.enforceTransition && !canTransition(fromStatus, toStatus)) {
-      return { success: false, error: invalidTransitionMessage(fromStatus, toStatus) };
+    if (options.enforceTransition) {
+      const transitionValidation = validateTransition(fromStatus, toStatus);
+      if (!transitionValidation.success) {
+        return {
+          success: false,
+          error: transitionValidation.error?.details[0]?.message ?? 'Invalid transition',
+        };
+      }
     }
 
     const updates: Record<string, unknown> = {

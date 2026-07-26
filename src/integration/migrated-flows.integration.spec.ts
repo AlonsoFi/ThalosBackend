@@ -14,13 +14,14 @@ import { ApiClient } from '../common/api/api-client';
 import { AgreementsController } from '../agreements/agreements.controller';
 import { AgreementActivityService } from '../agreements/agreement-activity.service';
 import { AgreementsService } from '../agreements/agreements.service';
-import { AgreementChatController } from '../agreement-chat/agreement-chat.controller';
-import { AgreementChatService } from '../agreement-chat/agreement-chat.service';
 import { DisputesController } from '../disputes/disputes.controller';
 import { DisputesService } from '../disputes/disputes.service';
 import { EscrowsController } from '../internal-trustless/escrows.controller';
 import { WalletsController } from '../wallets/wallets.controller';
 import { WalletsService } from '../wallets/wallets.service';
+import { RetryQueueService } from '../retry-queue/retry-queue.service';
+import { AgreementChatController } from '../agreement-chat/agreement-chat.controller';
+import { AgreementChatService } from '../agreement-chat/agreement-chat.service';
 
 // WalletsService transitively imports @stellar/stellar-sdk, which ships ESM that
 // ts-jest does not transform. The migrated flows under test never exercise
@@ -343,21 +344,28 @@ describe('migrated backend flows (integration)', () => {
       imports: [AuthModule],
       controllers: [
         AgreementsController,
-        AgreementChatController,
         DisputesController,
         EscrowsController,
         WalletsController,
+        AgreementChatController,
       ],
       providers: [
         AgreementsService,
         AgreementActivityService,
-        AgreementChatService,
         DisputesService,
         WalletsService,
+        AgreementChatService,
         { provide: SupabaseService, useValue: supabase },
         { provide: ApiClient, useValue: apiClient },
         { provide: ConfigService, useValue: { get: jest.fn(() => JWT_SECRET) } },
         { provide: EventEmitter2, useValue: { emit: jest.fn() } },
+        {
+          provide: RetryQueueService,
+          useValue: {
+            enqueue: jest.fn().mockResolvedValue({ id: 'job-1' }),
+            registerHandler: jest.fn(),
+          },
+        },
       ],
     }).compile();
 

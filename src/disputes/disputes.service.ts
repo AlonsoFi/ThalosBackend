@@ -8,7 +8,7 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { SupabaseService } from '../supabase/supabase.service';
 import { AgreementsService } from '../agreements/agreements.service';
 import { AgreementActivityService } from '../agreements/agreement-activity.service';
-import { DISPUTE_OPENED, DISPUTE_RESOLVED } from '../common/constants/notification-events';
+import { AGREEMENT_EVENTS } from '../common/events/agreement-events.constants';
 import {
   OpenDisputeDto,
   AssignResolverDto,
@@ -155,7 +155,7 @@ export class DisputesService {
       { previousState: statusResult.fromStatus ?? null, newState: 'disputed' },
     );
 
-    this.eventEmitter.emit(DISPUTE_OPENED, {
+    this.eventEmitter.emit(AGREEMENT_EVENTS.DISPUTE_OPENED, {
       disputeId: dispute.id,
       agreementId: dto.agreement_id,
       openedByWallet: dto.opened_by,
@@ -297,7 +297,7 @@ export class DisputesService {
       { previousState: statusResult.fromStatus ?? 'disputed', newState: 'resolved' },
     );
 
-    this.eventEmitter.emit(DISPUTE_RESOLVED, {
+    this.eventEmitter.emit(AGREEMENT_EVENTS.DISPUTE_RESOLVED, {
       disputeId,
       agreementId: dispute.agreement_id,
       resolvedByWallet: dto.resolved_by,

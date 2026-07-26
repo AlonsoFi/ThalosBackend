@@ -307,7 +307,7 @@ export class AgreementsService {
     const { data: agreement, error: fetchError } = await this.supabase
       .getClient()
       .from('agreements')
-      .select('amount, milestones, agreement_type')
+      .select('id, title, amount, asset, milestones, agreement_type')
       .eq('id', agreementId)
       .single();
 
@@ -328,8 +328,8 @@ export class AgreementsService {
     }
 
     const milestone = milestones[dto.milestone_index];
-    const emitsEvidence = dto.evidence_description !== undefined || dto.evidence_urls !== undefined;
     const previousMilestoneStatus = milestone.status;
+    const emitsEvidence = dto.evidence_description !== undefined || dto.evidence_urls !== undefined;
 
     milestone.status = dto.status;
 
@@ -368,12 +368,46 @@ export class AgreementsService {
       `milestone_${dto.status}`,
       {
         milestone_index: dto.milestone_index,
-        milestone_description: milestones[dto.milestone_index].description,
+        milestone_description: milestone.description,
         from: previousMilestoneStatus,
         to: dto.status,
+        milestone_amount: milestone.amount,
+        asset: (agreement.asset as string) ?? 'USDC',
+        evidence_description: dto.evidence_description,
+        evidence_urls: dto.evidence_urls,
       },
       { previousState: previousMilestoneStatus, newState: dto.status },
     );
+
+    const agreementTitle = (agreement.title as string) ?? agreementId;
+    const asset = (agreement.asset as string) ?? 'USDC';
+
+    if (emitsEvidence) {
+      this.eventEmitter.emit(AGREEMENT_EVENTS.EVIDENCE_SUBMITTED, {
+        agreementId: agreement.id as string,
+        agreementTitle,
+        milestoneIndex: dto.milestone_index,
+        milestoneDescription: milestone.description,
+        milestoneAmount: milestone.amount,
+        asset,
+        submittedByWallet: dto.actor_wallet,
+        evidenceDescription: dto.evidence_description,
+        evidenceUrls: dto.evidence_urls,
+      });
+    }
+
+    if (previousMilestoneStatus !== 'approved' && dto.status === 'approved') {
+      this.eventEmitter.emit(AGREEMENT_EVENTS.MILESTONE_APPROVED, {
+        agreementId: agreement.id as string,
+        agreementTitle,
+        milestoneIndex: dto.milestone_index,
+        milestoneDescription: milestone.description,
+        milestoneAmount: milestone.amount,
+        asset,
+        approvedByWallet: dto.actor_wallet,
+      });
+    }
+
     return { success: true, error: null };
   }
 

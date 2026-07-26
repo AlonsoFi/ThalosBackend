@@ -22,6 +22,41 @@ const TARGET_URL = (process.env.THALOS_TARGET_URL || `http://127.0.0.1:${MOCK_PO
   '',
 );
 
+/**
+ * Safety rail: never let the suite hammer production. If THALOS_TARGET_URL
+ * resolves to a hostname that looks like production, refuse to run. Override
+ * only with an explicit LOAD_ALLOW_PROD=1 (documented in README) if a host
+ * legitimately trips the heuristic.
+ *
+ * Deny-by-signal: a hostname is rejected if it carries a prod marker and does
+ * NOT carry a non-prod marker (staging/dev/test/preview) or a loopback/local
+ * address.
+ */
+function assertNotProduction(rawUrl) {
+  if (!process.env.THALOS_TARGET_URL) return; // local mock, always safe
+  if (process.env.LOAD_ALLOW_PROD === '1') return; // explicit opt-out
+  let host;
+  try {
+    host = new URL(rawUrl).hostname.toLowerCase();
+  } catch {
+    throw new Error(`THALOS_TARGET_URL is not a valid URL: ${rawUrl}`);
+  }
+  const isLocal =
+    host === 'localhost' ||
+    host === '127.0.0.1' ||
+    host === '::1' ||
+    host.endsWith('.local');
+  const nonProd = /(staging|stage|dev|develop|test|qa|preview|sandbox|local)/.test(host);
+  const prodMarker = /(^|\.)prod(uction)?(\.|$)/.test(host);
+  if (!isLocal && !nonProd && prodMarker) {
+    throw new Error(
+      `Refusing to load-test what looks like a PRODUCTION host: "${host}". ` +
+        `Point THALOS_TARGET_URL at staging, or set LOAD_ALLOW_PROD=1 to override.`,
+    );
+  }
+}
+assertNotProduction(TARGET_URL);
+
 /** API global prefix (Nest uses setGlobalPrefix('v1')). */
 const API_PREFIX = process.env.THALOS_API_PREFIX ?? 'v1';
 

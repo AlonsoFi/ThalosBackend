@@ -257,10 +257,24 @@ if (require.main === module) {
         // Clear data but keep the auth_users mapping.
         db.agreements.clear();
         db.activity.clear();
-        process.send({ ok: true, size: 0 });
+        process.send({ ok: true, type: 'reset', size: 0 });
       } else if (msg.cmd === 'seed') {
         const size = seedAgreements(Number(msg.count) || 0);
-        process.send({ ok: true, size });
+        process.send({ ok: true, type: 'seeded', size });
+      } else if (msg.cmd === 'sample') {
+        // Cross-platform self-report of CPU/memory for the mock process. Unlike
+        // shelling out to `ps` (Unix-only), process.cpuUsage()/memoryUsage()
+        // work on every platform, Windows included. cpuUsage() is cumulative in
+        // microseconds; the sampler derives %CPU from deltas over wall time.
+        const cpu = process.cpuUsage(); // { user, system } in microseconds
+        const mem = process.memoryUsage();
+        process.send({
+          ok: true,
+          type: 'sample',
+          atMicros: Number(process.hrtime.bigint() / 1000n), // monotonic
+          cpuMicros: cpu.user + cpu.system,
+          rssMb: mem.rss / (1024 * 1024),
+        });
       }
     });
   }

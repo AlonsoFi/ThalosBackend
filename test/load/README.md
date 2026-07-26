@@ -51,8 +51,19 @@ pnpm test:load
   (a **testnet** wallet).
 - `LOAD_TEST_JWT` lets you run without knowing `JWT_SECRET`. Alternatively set
   `JWT_SECRET` and a token is minted for you.
-- Resource (CPU/RSS) sampling only works for a local process; for staging, read
-  CPU/memory from the hosting platform's metrics — the report marks these `n/a`.
+- Resource (CPU/RSS) sampling only works for the **local mock** (self-reported over
+  IPC — see below); for staging, read CPU/memory from the hosting platform's
+  metrics — the report marks these `n/a`.
+- **Production guard:** the suite refuses to run if `THALOS_TARGET_URL` looks like a
+  production host (e.g. `prod`/`production` in the hostname). Override with
+  `LOAD_ALLOW_PROD=1` only if a legitimate staging host trips the heuristic.
+
+### CPU/RSS sampling (cross-platform)
+
+Resource sampling asks the forked mock to self-report `process.cpuUsage()` /
+`process.memoryUsage()` over IPC. This works on **macOS, Linux and Windows** — it
+does not shell out to `ps`. `%CPU` is derived from cumulative CPU-time deltas over
+wall time, so values can exceed 100% on multi-core machines (that's expected).
 
 ## Knobs (env)
 
@@ -62,8 +73,10 @@ pnpm test:load
 | `LOAD_CONNECTIONS` | `100` | Concurrent users |
 | `LOAD_DURATION` | `20` | Seconds per scenario |
 | `LOAD_DATASET_SMALL` / `LOAD_DATASET_LARGE` | `500` / `1000` | Dataset sizes |
-| `LOAD_SIM_DB_LATENCY_MS` | `4` | Mock's simulated Supabase latency |
+| `LOAD_SIM_DB_LATENCY_MS` | `4` | Mock's simulated Supabase latency (mock only; **not** real DB timing — for real latency run against staging) |
 | `LOAD_TEST_JWT` | — | Pre-seeded token (staging) |
+| `LOAD_IPC_TIMEOUT_MS` | `15000` | Max wait for a mock IPC reply before failing (guards against a hung mock) |
+| `LOAD_ALLOW_PROD` | — | Set to `1` to bypass the production-host guard |
 
 ## Scenarios & metrics
 

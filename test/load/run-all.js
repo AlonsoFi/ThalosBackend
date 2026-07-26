@@ -21,11 +21,16 @@ const autocannonPkg = require('autocannon/package.json');
 const cfg = require('./config');
 const scenarios = require('./scenarios');
 const { waitForHealth, createAgreement, seedAgreements } = require('./lib/http');
-const { startSampling } = require('./lib/resource-sampler');
+const { startIpcSampling } = require('./lib/resource-sampler');
 const { summarize, writeReport } = require('./lib/report');
 
-async function withSampling(pid, fn) {
-  const sampler = startSampling(pid);
+/** Guard against a dead/unresponsive mock hanging an IPC round-trip forever. */
+const IPC_TIMEOUT_MS = Number(process.env.LOAD_IPC_TIMEOUT_MS) || 15000;
+
+async function withSampling(mock, fn) {
+  // Sample the mock over IPC (cross-platform). For remote targets `mock` is
+  // null, so the sampler is a no-op and resources are reported as unavailable.
+  const sampler = startIpcSampling(mock);
   try {
     const result = await fn();
     const resources = await sampler.stop();
@@ -36,25 +41,44 @@ async function withSampling(pid, fn) {
   }
 }
 
-/** Seed via IPC when we own the mock process; fall back to HTTP for remote. */
-function seedViaIpc(mock, count) {
+/**
+ * Await a single tagged IPC reply from the mock, rejecting after IPC_TIMEOUT_MS
+ * so a dead mock can never hang the whole run.
+ */
+function ipcRequest(mock, message, replyType) {
   return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      mock.off('message', onMsg);
+      reject(new Error(`IPC "${message.cmd}" timed out after ${IPC_TIMEOUT_MS}ms`));
+    }, IPC_TIMEOUT_MS);
     const onMsg = (msg) => {
-      if (msg && msg.ok) {
-        mock.off('message', onMsg);
-        resolve(msg.size);
-      }
+      if (!msg || !msg.ok || msg.type !== replyType) return;
+      clearTimeout(timer);
+      mock.off('message', onMsg);
+      resolve(msg);
     };
     mock.on('message', onMsg);
-    mock.send({ cmd: 'seed', count }, (err) => err && reject(err));
+    mock.send(message, (err) => {
+      if (err) {
+        clearTimeout(timer);
+        mock.off('message', onMsg);
+        reject(err);
+      }
+    });
   });
 }
 
+/** Seed via IPC when we own the mock process; fall back to HTTP for remote. */
+async function seedViaIpc(mock, count) {
+  const msg = await ipcRequest(mock, { cmd: 'seed', count }, 'seeded');
+  return msg.size;
+}
+
 /** Run one scenario resiliently: a failure is recorded, never fatal. */
-async function runScenario(collector, mockPid, name, desc, fn) {
+async function runScenario(collector, mock, name, desc, fn) {
   log(`Running scenario: ${name} ...`);
   try {
-    const { result, resources } = await withSampling(mockPid, fn);
+    const { result, resources } = await withSampling(mock, fn);
     collector.push(summarize(name, desc, result, resources));
   } catch (err) {
     log(`  scenario "${name}" errored: ${err.message} — recording and continuing`);
@@ -65,7 +89,6 @@ async function runScenario(collector, mockPid, name, desc, fn) {
 async function main() {
   const results = [];
   let mock = null;
-  let mockPid = null;
 
   if (cfg.IS_LOCAL_MOCK) {
     log(`Starting local mock on port ${cfg.MOCK_PORT} ...`);
@@ -73,7 +96,6 @@ async function main() {
       env: { ...process.env, LOAD_MOCK_PORT: String(cfg.MOCK_PORT) },
       stdio: ['ignore', 'ignore', 'inherit', 'ipc'],
     });
-    mockPid = mock.pid;
   }
 
   try {
@@ -89,11 +111,11 @@ async function main() {
     const updateId = await createAgreement({ title: 'update-target' });
     log(`Base agreement: ${baseId} · update target: ${updateId}`);
 
-    await runScenario(results, mockPid, 'create', 'Concurrent Agreement creation (POST /agreements) — also activity-write throughput.', () => scenarios.create());
-    await runScenario(results, mockPid, 'read', 'Single Agreement read (GET /agreements/:id).', () => scenarios.read(baseId));
-    await runScenario(results, mockPid, 'update', 'Concurrent Agreement status updates (PATCH /agreements/:id/status).', () => scenarios.update(updateId));
-    await runScenario(results, mockPid, 'activity', 'Activity feed read (GET /agreements/:id/activity).', () => scenarios.activity(baseId));
-    await runScenario(results, mockPid, 'burst', 'Burst traffic: 3x connections, pipelined, short window (read spike).', () => scenarios.burst(baseId));
+    await runScenario(results, mock, 'create', 'Concurrent Agreement creation (POST /agreements) — also activity-write throughput.', () => scenarios.create());
+    await runScenario(results, mock, 'read', 'Single Agreement read (GET /agreements/:id).', () => scenarios.read(baseId));
+    await runScenario(results, mock, 'update', 'Concurrent Agreement status updates (PATCH /agreements/:id/status).', () => scenarios.update(updateId));
+    await runScenario(results, mock, 'activity', 'Activity feed read (GET /agreements/:id/activity).', () => scenarios.activity(baseId));
+    await runScenario(results, mock, 'burst', 'Burst traffic: 3x connections, pipelined, short window (read spike).', () => scenarios.burst(baseId));
 
     // Dataset-size scenarios. For the local mock we reset to an EXACT dataset via
     // IPC so the "500 / 1000" labels are accurate (the create scenario above left
@@ -104,26 +126,17 @@ async function main() {
         await seedAgreements(count); // remote: additive
         return;
       }
-      await new Promise((resolve, reject) => {
-        const onMsg = (m) => {
-          if (m && m.ok) {
-            mock.off('message', onMsg);
-            resolve();
-          }
-        };
-        mock.on('message', onMsg);
-        mock.send({ cmd: 'reset' }, (err) => err && reject(err));
-      });
+      await ipcRequest(mock, { cmd: 'reset' }, 'reset');
       await seedViaIpc(mock, count);
     };
 
     log(`Resetting + seeding ${cfg.DATASET_SMALL} agreements ...`);
     await resetTo(cfg.DATASET_SMALL);
-    await runScenario(results, mockPid, `list_${cfg.DATASET_SMALL}`, `List by wallet against a ${cfg.DATASET_SMALL}-agreement dataset.`, () => scenarios.list(`list_${cfg.DATASET_SMALL}`));
+    await runScenario(results, mock, `list_${cfg.DATASET_SMALL}`, `List by wallet against a ${cfg.DATASET_SMALL}-agreement dataset.`, () => scenarios.list(`list_${cfg.DATASET_SMALL}`));
 
     log(`Resetting + seeding ${cfg.DATASET_LARGE} agreements ...`);
     await resetTo(cfg.DATASET_LARGE);
-    await runScenario(results, mockPid, `list_${cfg.DATASET_LARGE}`, `List by wallet against a ${cfg.DATASET_LARGE}-agreement dataset.`, () => scenarios.list(`list_${cfg.DATASET_LARGE}`));
+    await runScenario(results, mock, `list_${cfg.DATASET_LARGE}`, `List by wallet against a ${cfg.DATASET_LARGE}-agreement dataset.`, () => scenarios.list(`list_${cfg.DATASET_LARGE}`));
 
     const meta = {
       generatedAt: new Date().toISOString(),

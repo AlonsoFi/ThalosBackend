@@ -67,6 +67,19 @@ function toMarkdown(meta, scenarios) {
         '`THALOS_TARGET_URL` to publish official staging numbers.',
     );
     lines.push('');
+  } else {
+    lines.push(
+      '> ⚠️ **Remote target.** The `list_*` scenarios use **additive** seeding ' +
+        '(a shared remote DB cannot be reset from here), so the dataset sizes behind ' +
+        'those labels are **approximate** — they reflect at least N rows plus whatever ' +
+        'already existed. Treat `list_500` / `list_1000` as lower bounds, not exact sizes.',
+    );
+    lines.push('');
+    lines.push(
+      '> ℹ️ CPU/RSS show `n/a` for remote targets — the server process is not reachable ' +
+        'from here. Read CPU/memory from the hosting platform metrics.',
+    );
+    lines.push('');
   }
 
   lines.push('## Summary');

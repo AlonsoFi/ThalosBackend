@@ -40,6 +40,36 @@ idempotency-key blocking, and the admin-only `POST /v1/retry-queue/:id/retry` HT
 the 403 rejection for non-admin users). It uses the same in-memory Supabase fixture pattern as the
 migrated-flows suite, extended with the `lte` filter the retry queue's polling queries need.
 
+## KYC/KYB Integration Test Suite (issue #75)
+
+`src/integration/kyc-kyb.integration.spec.ts` is the provider-agnostic compliance suite. It boots
+real Nest controllers (`KybController`, `VerificationController`), real JWT / internal-secret
+guards, and the global `ValidationPipe` against an in-memory Supabase fake. Identity vendors are
+injected via `MockIdentityProvider` (`src/kyb/providers/mock-identity.provider.ts`) so Persona,
+Sumsub, Onfido, and manual paths share the same cases — swap the DI binding, not the tests.
+
+### Covered cases
+
+| Area                            | Cases                                                                                                                        |
+| ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| KYB session create              | multi-provider pending / instant-verified / instant-rejected; provider 5xx; idempotent re-POST                               |
+| KYB status                      | owner GET; admin successful review; failed review + reason; re-attempt after reject                                          |
+| KYB invalid / authz             | 401, DTO 400, mass-assignment 400, bad UUID 400, 404, IDOR 403, non-admin review 403, finalize immutability                  |
+| Provider mock surface           | `checkStatus` transitions + outage rejection                                                                                 |
+| Verification API KYC (user)     | unverified default, success, reject, expired, pending, multi-provider level pick, IDOR, admin, internal secret               |
+| Verification API KYB (business) | success, expired, non-admin 403                                                                                              |
+| Webhooks                        | N/A — identity-vendor webhooks not implemented yet (Trustless Work only); placeholder documents expected coverage when added |
+
+Run just this suite:
+
+```bash
+pnpm exec jest src/integration/kyc-kyb.integration.spec.ts --runInBand
+```
+
+This suite should stay green before merging compliance-related changes. Adding a new
+`IdentityProvider` implementation only requires a new `MockIdentityProvider({ name, ... })` binding
+in the existing cases — no rewrite of the HTTP assertions.
+
 ## Running Locally
 
 Install dependencies:

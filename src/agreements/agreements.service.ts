@@ -1,23 +1,32 @@
 import {
+  BadRequestException,
   ForbiddenException,
   Injectable,
   NotFoundException,
-} from "@nestjs/common";
-import { EventEmitter2 } from "@nestjs/event-emitter";
-import { SupabaseService } from "../supabase/supabase.service";
-import { CreateAgreementDto } from "./dto/create-agreement.dto";
-import { LinkContractDto } from "./dto/link-contract.dto";
-import { UpdateAgreementStatusDto } from "./dto/update-status.dto";
-import { UpdateMilestoneDto } from "./dto/update-milestone.dto";
-import { AGREEMENT_EVENTS } from "../common/events/agreement-events.constants";
-import { AgreementSyncService } from "./sync/agreement-sync.service";
-import { AgreementValidationService } from "./validation/agreement-validation.service";
+} from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
+import { SupabaseService } from '../supabase/supabase.service';
+import { CreateAgreementDto } from './dto/create-agreement.dto';
+import { LinkContractDto } from './dto/link-contract.dto';
+import { UpdateAgreementStatusDto } from './dto/update-status.dto';
+import { UpdateMilestoneDto } from './dto/update-milestone.dto';
+import { AGREEMENT_EVENTS } from '../common/events/agreement-events.constants';
+import { milestonesSatisfyCompletion } from './agreement-lifecycle';
+import {
+  validateAgreement,
+  validateTransition,
+  validateAgreementConsistency,
+} from './agreement.validator';
+import { AgreementActivityService } from './agreement-activity.service';
+import { AgreementSyncService } from './sync/agreement-sync.service';
+import { AgreementValidationService } from './validation/agreement-validation.service';
 
 @Injectable()
 export class AgreementsService {
   constructor(
     private readonly supabase: SupabaseService,
     private readonly eventEmitter: EventEmitter2,
+    private readonly activity: AgreementActivityService,
     private readonly syncEngine: AgreementSyncService,
     private readonly validation: AgreementValidationService,
   ) {}
@@ -25,9 +34,9 @@ export class AgreementsService {
   private async walletForUserId(userId: string): Promise<string | null> {
     const { data, error } = await this.supabase
       .getClient()
-      .from("auth_users")
-      .select("wallet_public_key")
-      .eq("id", userId)
+      .from('auth_users')
+      .select('wallet_public_key')
+      .eq('id', userId)
       .maybeSingle();
     if (error || !data?.wallet_public_key) return null;
     return data.wallet_public_key as string;
@@ -37,12 +46,12 @@ export class AgreementsService {
     const w = await this.walletForUserId(userId);
     if (!w) {
       throw new ForbiddenException(
-        "No hay wallet en auth_users para este usuario (wallet_public_key vacío o usuario no encontrado). Revisá Supabase y que Nest use el mismo proyecto (SUPABASE_URL).",
+        'No hay wallet en auth_users para este usuario (wallet_public_key vacío o usuario no encontrado). Revisá Supabase y que Nest use el mismo proyecto (SUPABASE_URL).',
       );
     }
     if (w !== actorWallet) {
       throw new ForbiddenException(
-        "created_by debe ser exactamente auth_users.wallet_public_key del usuario del JWT (misma cadena G...).",
+        'created_by debe ser exactamente auth_users.wallet_public_key del usuario del JWT (misma cadena G...).',
       );
     }
   }
@@ -51,45 +60,47 @@ export class AgreementsService {
   private async profileIdByWallet(wallet: string): Promise<string | null> {
     const { data, error } = await this.supabase
       .getClient()
-      .from("profiles")
-      .select("id")
-      .eq("wallet_address", wallet)
+      .from('profiles')
+      .select('id')
+      .eq('wallet_address', wallet)
       .maybeSingle();
     if (error || !data?.id) return null;
     return data.id as string;
   }
 
-  private async assertCanAccessAgreement(
-    userId: string,
-    agreementId: string,
-  ): Promise<void> {
+  private async assertCanAccessAgreement(userId: string, agreementId: string): Promise<void> {
     const wallet = await this.walletForUserId(userId);
-    if (!wallet) throw new ForbiddenException("No wallet on profile");
+    if (!wallet) throw new ForbiddenException('No wallet on profile');
 
     const { data: agreement, error: aErr } = await this.supabase
       .getClient()
-      .from("agreements")
-      .select("id, created_by")
-      .eq("id", agreementId)
+      .from('agreements')
+      .select('id, created_by')
+      .eq('id', agreementId)
       .maybeSingle();
-    if (aErr || !agreement) throw new NotFoundException("Agreement not found");
+    if (aErr || !agreement) throw new NotFoundException('Agreement not found');
 
     const createdBy = (agreement as { created_by: string }).created_by;
     if (createdBy === wallet || createdBy === userId) return;
 
     const { data: parts } = await this.supabase
       .getClient()
-      .from("agreement_participants")
-      .select("wallet_address")
-      .eq("agreement_id", agreementId)
-      .eq("wallet_address", wallet)
+      .from('agreement_participants')
+      .select('wallet_address')
+      .eq('agreement_id', agreementId)
+      .eq('wallet_address', wallet)
       .limit(1);
     if (!parts?.length) {
-      throw new ForbiddenException("Not a participant of this agreement");
+      throw new ForbiddenException('Not a participant of this agreement');
     }
   }
 
   async create(userId: string, dto: CreateAgreementDto) {
+    const validation = validateAgreement(dto);
+    if (!validation.success) {
+      return { agreement: null, error: validation.error };
+    }
+
     await this.assertActorWallet(userId, dto.created_by);
 
     const createdByProfileId = await this.profileIdByWallet(dto.created_by);
@@ -99,9 +110,9 @@ export class AgreementsService {
       title: dto.title,
       description: dto.description ?? null,
       amount: dto.amount,
-      asset: dto.asset ?? "USDC",
-      status: "pending",
-      agreement_type: dto.agreement_type ?? "single",
+      asset: dto.asset ?? 'USDC',
+      status: 'pending',
+      agreement_type: dto.agreement_type ?? 'single',
       milestones: dto.milestones ?? [],
       metadata: dto.metadata ?? {},
       created_by: dto.created_by,
@@ -112,7 +123,7 @@ export class AgreementsService {
 
     const { data: agreement, error: agreementError } = await this.supabase
       .getClient()
-      .from("agreements")
+      .from('agreements')
       .insert(agreementRow)
       .select()
       .single();
@@ -136,232 +147,303 @@ export class AgreementsService {
 
     const { error: participantsError } = await this.supabase
       .getClient()
-      .from("agreement_participants")
+      .from('agreement_participants')
       .insert(participants);
 
     if (participantsError) {
-      console.error("agreement_participants insert:", participantsError);
+      await this.supabase.getClient().from('agreements').delete().eq('id', agreement.id);
+      throw new BadRequestException(
+        `Failed to create agreement participants: ${participantsError.message}`,
+      );
     }
 
-    await this.logActivity(agreement.id, dto.created_by, "created", {
+    await this.activity.logActivity(agreement.id, dto.created_by, 'created', {
       title: dto.title,
       amount: dto.amount,
     });
 
+    const createdMilestones = (agreement.milestones ?? []) as Array<{
+      description?: string;
+      status?: string;
+    }>;
+    for (let index = 0; index < createdMilestones.length; index++) {
+      const milestone = createdMilestones[index];
+      await this.activity.logActivity(
+        agreement.id,
+        dto.created_by,
+        'milestone_created',
+        {
+          milestone_index: index,
+          milestone_description: milestone.description,
+        },
+        { previousState: null, newState: milestone.status ?? 'pending' },
+      );
+    }
+
     this.eventEmitter.emit(AGREEMENT_EVENTS.CREATED, {
-      agreementId:        agreement.id,
-      title:              dto.title,
-      description:        dto.description,
-      amount:             dto.amount,
-      asset:              dto.asset ?? "USDC",
-      createdByWallet:    dto.created_by,
+      agreementId: agreement.id,
+      title: dto.title,
+      description: dto.description,
+      amount: dto.amount,
+      asset: dto.asset ?? 'USDC',
+      createdByWallet: dto.created_by,
       participantWallets: dto.participants.map((p) => p.wallet_address),
     });
 
     // 🔁 Trigger sync on creation (if contract_id is present)
     if (agreement.contract_id) {
       this.syncEngine.syncAgreement(agreement.id, { useRetryQueue: true }).catch((err) =>
-        console.error("Post-create sync error:", err),
+        console.error('Post-create sync error:', err),
       );
     }
 
     return { agreement, error: null };
   }
 
-  async linkContract(
-    userId: string,
-    agreementId: string,
-    dto: LinkContractDto,
-  ) {
+  async linkContract(userId: string, agreementId: string, dto: LinkContractDto) {
     await this.assertCanAccessAgreement(userId, agreementId);
     await this.assertActorWallet(userId, dto.actor_wallet);
 
     // 🔍 Validate contract_id against Trustless Work BEFORE persisting
-    const validation = await this.syncEngine.validateContractOnTrustless(
-      dto.contract_id,
-    );
-    if (!validation.valid) {
+    const twValidation = await this.syncEngine.validateContractOnTrustless(dto.contract_id);
+    if (!twValidation.valid) {
       return {
         success: false,
-        error: validation.error ?? "Contract not found on Trustless Work",
+        error: twValidation.error ?? 'Contract not found on Trustless Work',
       };
     }
 
     const { error } = await this.supabase
       .getClient()
-      .from("agreements")
+      .from('agreements')
       .update({
-        contract_id:           dto.contract_id,
-        updated_at:            new Date().toISOString(),
+        contract_id: dto.contract_id,
+        updated_at: new Date().toISOString(),
       })
-      .eq("id", agreementId);
+      .eq('id', agreementId);
 
     if (error) return { success: false, error: error.message };
 
-    await this.logActivity(agreementId, dto.actor_wallet, "contract_linked", {
+    await this.activity.logActivity(agreementId, dto.actor_wallet, 'contract_linked', {
       contract_id: dto.contract_id,
     });
 
     // 🔁 Trigger sync after successful link
     this.syncEngine.syncAgreement(agreementId, { useRetryQueue: true }).catch((err) =>
-      console.error("Post-link sync error:", err),
+      console.error('Post-link sync error:', err),
     );
 
     return { success: true, error: null };
   }
 
-  async updateStatus(
-    userId: string,
-    agreementId: string,
-    dto: UpdateAgreementStatusDto,
-  ) {
+  async updateStatus(userId: string, agreementId: string, dto: UpdateAgreementStatusDto) {
     await this.assertCanAccessAgreement(userId, agreementId);
     await this.assertActorWallet(userId, dto.actor_wallet);
 
-    // First, fetch the current status for validation
-    const { data: currentAgreement } = await this.supabase
+    const { data: current, error: fetchError } = await this.supabase
       .getClient()
-      .from("agreements")
-      .select("status")
-      .eq("id", agreementId)
+      .from('agreements')
+      .select('status, milestones, title, amount, asset')
+      .eq('id', agreementId)
       .single();
 
-    if (!currentAgreement) {
-      return { success: false, error: "Agreement not found" };
+    if (fetchError || !current) {
+      return { success: false, error: fetchError?.message || 'Agreement not found' };
     }
 
-    const fromStatus = currentAgreement.status as string;
+    const fromStatus = current.status as string;
 
-    // 🛡 Validate the transition before applying
-    const validation = this.validation.validateTransition(fromStatus, dto.status);
-    if (!validation.valid) {
-      return { success: false, error: validation.reason };
+    // 🛡 Validate transition using centralized validation layer
+    const transitionValidation = this.validation.validateTransition(fromStatus, dto.status);
+    if (!transitionValidation.valid) {
+      throw new BadRequestException({ success: false, error: transitionValidation.reason });
+    }
+
+    // Main's additional validation: milestones must be satisfied for completion
+    if (dto.status === 'completed' && !milestonesSatisfyCompletion(current.milestones)) {
+      throw new BadRequestException({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          details: [
+            {
+              field: 'status',
+              code: 'INVALID_TRANSITION',
+              message:
+                'All milestones must be approved or released before the agreement can be completed',
+            },
+          ],
+        },
+      });
     }
 
     const updates: Record<string, unknown> = {
       status: dto.status,
       updated_at: new Date().toISOString(),
     };
-    if (dto.status === "funded") {
+    if (dto.status === 'funded') {
       updates.funded_at = new Date().toISOString();
-    } else if (dto.status === "completed" || dto.status === "resolved") {
+    } else if (dto.status === 'completed' || dto.status === 'resolved') {
       updates.completed_at = new Date().toISOString();
     }
 
     const { error } = await this.supabase
       .getClient()
-      .from("agreements")
+      .from('agreements')
       .update(updates)
-      .eq("id", agreementId);
+      .eq('id', agreementId);
 
     if (error) return { success: false, error: error.message };
 
-    await this.logActivity(
+    await this.activity.logActivity(
       agreementId,
       dto.actor_wallet,
       `status_changed_to_${dto.status}`,
-      { status: dto.status },
+      {
+        status: dto.status,
+        from: fromStatus,
+        to: dto.status,
+      },
+      { previousState: fromStatus, newState: dto.status },
     );
 
     // 🔁 Sync the transition with TW
     this.syncEngine.syncStatusTransition(agreementId, fromStatus, dto.status).catch((err) =>
-      console.error("Post-status-change sync error:", err),
+      console.error('Post-status-change sync error:', err),
     );
 
-    if (dto.status === "funded") {
-      const { data: row } = await this.supabase
-        .getClient()
-        .from("agreements")
-        .select("title, amount, asset")
-        .eq("id", agreementId)
-        .single();
-      if (row) {
-        this.eventEmitter.emit(AGREEMENT_EVENTS.FUNDED, {
-          agreementId,
-          title:          row.title,
-          amount:         row.amount,
-          asset:          row.asset ?? "USDC",
-          fundedByWallet: dto.actor_wallet,
-        });
-      }
-    } else if (dto.status === "completed" || dto.status === "resolved") {
-      const { data: row } = await this.supabase
-        .getClient()
-        .from("agreements")
-        .select("title, amount, asset")
-        .eq("id", agreementId)
-        .single();
-      if (row) {
-        this.eventEmitter.emit(AGREEMENT_EVENTS.COMPLETED, {
-          agreementId,
-          title:       row.title,
-          totalAmount: row.amount,
-          asset:       row.asset ?? "USDC",
-          completedAt: new Date().toISOString(),
-        });
-      }
+    if (dto.status === 'funded') {
+      this.eventEmitter.emit(AGREEMENT_EVENTS.FUNDED, {
+        agreementId,
+        title: current.title,
+        amount: current.amount,
+        asset: current.asset ?? 'USDC',
+        fundedByWallet: dto.actor_wallet,
+      });
+    } else if (dto.status === 'completed' || dto.status === 'resolved') {
+      this.eventEmitter.emit(AGREEMENT_EVENTS.COMPLETED, {
+        agreementId,
+        title: current.title,
+        totalAmount: current.amount,
+        asset: current.asset ?? 'USDC',
+        completedAt: new Date().toISOString(),
+      });
     }
 
     return { success: true, error: null };
   }
 
-  async updateMilestone(
-    userId: string,
-    agreementId: string,
-    dto: UpdateMilestoneDto,
-  ) {
+  async updateMilestone(userId: string, agreementId: string, dto: UpdateMilestoneDto) {
     await this.assertCanAccessAgreement(userId, agreementId);
     await this.assertActorWallet(userId, dto.actor_wallet);
 
     const { data: agreement, error: fetchError } = await this.supabase
       .getClient()
-      .from("agreements")
-      .select("milestones")
-      .eq("id", agreementId)
+      .from('agreements')
+      .select('id, title, amount, asset, milestones, agreement_type')
+      .eq('id', agreementId)
       .single();
 
     if (fetchError || !agreement) {
-      return { success: false, error: fetchError?.message || "Not found" };
+      return { success: false, error: fetchError?.message || 'Not found' };
     }
 
     const milestones = agreement.milestones as Array<{
       description: string;
       amount: string;
       status: string;
+      evidence_description?: string;
+      evidence_urls?: string[];
+      evidence_submitted_at?: string;
     }>;
-    if (
-      dto.milestone_index < 0 ||
-      dto.milestone_index >= milestones.length
-    ) {
-      return { success: false, error: "Invalid milestone index" };
+    if (dto.milestone_index < 0 || dto.milestone_index >= milestones.length) {
+      return { success: false, error: 'Invalid milestone index' };
     }
 
-    milestones[dto.milestone_index].status = dto.status;
+    const milestone = milestones[dto.milestone_index];
+    const previousMilestoneStatus = milestone.status;
+    const emitsEvidence = dto.evidence_description !== undefined || dto.evidence_urls !== undefined;
+
+    milestone.status = dto.status;
+
+    if (dto.evidence_description !== undefined) {
+      milestone.evidence_description = dto.evidence_description;
+    }
+    if (dto.evidence_urls !== undefined) {
+      milestone.evidence_urls = dto.evidence_urls;
+    }
+    if (emitsEvidence) {
+      milestone.evidence_submitted_at = new Date().toISOString();
+    }
+
+    const consistency = validateAgreementConsistency({
+      amount: agreement.amount,
+      milestones,
+    });
+    if (!consistency.success) {
+      throw new BadRequestException({ success: false, error: consistency.error });
+    }
 
     const { error: updateError } = await this.supabase
       .getClient()
-      .from("agreements")
+      .from('agreements')
       .update({
         milestones,
         updated_at: new Date().toISOString(),
       })
-      .eq("id", agreementId);
+      .eq('id', agreementId);
 
     if (updateError) return { success: false, error: updateError.message };
 
-    await this.logActivity(
+    await this.activity.logActivity(
       agreementId,
       dto.actor_wallet,
       `milestone_${dto.status}`,
       {
         milestone_index: dto.milestone_index,
-        milestone_description: milestones[dto.milestone_index].description,
+        milestone_description: milestone.description,
+        from: previousMilestoneStatus,
+        to: dto.status,
+        milestone_amount: milestone.amount,
+        asset: (agreement.asset as string) ?? 'USDC',
+        evidence_description: dto.evidence_description,
+        evidence_urls: dto.evidence_urls,
       },
+      { previousState: previousMilestoneStatus, newState: dto.status },
     );
+
+    const agreementTitle = (agreement.title as string) ?? agreementId;
+    const asset = (agreement.asset as string) ?? 'USDC';
+
+    if (emitsEvidence) {
+      this.eventEmitter.emit(AGREEMENT_EVENTS.EVIDENCE_SUBMITTED, {
+        agreementId: agreement.id as string,
+        agreementTitle,
+        milestoneIndex: dto.milestone_index,
+        milestoneDescription: milestone.description,
+        milestoneAmount: milestone.amount,
+        asset,
+        submittedByWallet: dto.actor_wallet,
+        evidenceDescription: dto.evidence_description,
+        evidenceUrls: dto.evidence_urls,
+      });
+    }
+
+    if (previousMilestoneStatus !== 'approved' && dto.status === 'approved') {
+      this.eventEmitter.emit(AGREEMENT_EVENTS.MILESTONE_APPROVED, {
+        agreementId: agreement.id as string,
+        agreementTitle,
+        milestoneIndex: dto.milestone_index,
+        milestoneDescription: milestone.description,
+        milestoneAmount: milestone.amount,
+        asset,
+        approvedByWallet: dto.actor_wallet,
+      });
+    }
 
     // 🔁 Trigger sync after milestone update
     this.syncEngine.syncAgreement(agreementId, { useRetryQueue: true }).catch((err) =>
-      console.error("Post-milestone sync error:", err),
+      console.error('Post-milestone sync error:', err),
     );
 
     return { success: true, error: null };
@@ -372,9 +454,9 @@ export class AgreementsService {
 
     const { data: participations, error: partError } = await this.supabase
       .getClient()
-      .from("agreement_participants")
-      .select("agreement_id")
-      .eq("wallet_address", wallet);
+      .from('agreement_participants')
+      .select('agreement_id')
+      .eq('wallet_address', wallet);
 
     if (partError) {
       return { agreements: [], error: partError.message };
@@ -382,9 +464,9 @@ export class AgreementsService {
 
     const { data: createdRows, error: createdError } = await this.supabase
       .getClient()
-      .from("agreements")
-      .select("id")
-      .eq("created_by", wallet);
+      .from('agreements')
+      .select('id')
+      .eq('created_by', wallet);
 
     if (createdError) {
       return { agreements: [], error: createdError.message };
@@ -405,10 +487,10 @@ export class AgreementsService {
     const ids = [...idSet];
     const { data: agreements, error: agError } = await this.supabase
       .getClient()
-      .from("agreements")
-      .select("*")
-      .in("id", ids)
-      .order("created_at", { ascending: false });
+      .from('agreements')
+      .select('*')
+      .in('id', ids)
+      .order('created_at', { ascending: false });
 
     if (agError) return { agreements: [], error: agError.message };
     return { agreements: agreements ?? [], error: null };
@@ -419,9 +501,9 @@ export class AgreementsService {
 
     const { data: agreement, error: agError } = await this.supabase
       .getClient()
-      .from("agreements")
-      .select("*")
-      .eq("id", agreementId)
+      .from('agreements')
+      .select('*')
+      .eq('id', agreementId)
       .single();
 
     if (agError) {
@@ -430,9 +512,9 @@ export class AgreementsService {
 
     const { data: participants, error: partError } = await this.supabase
       .getClient()
-      .from("agreement_participants")
-      .select("*")
-      .eq("agreement_id", agreementId);
+      .from('agreement_participants')
+      .select('*')
+      .eq('agreement_id', agreementId);
 
     if (partError) {
       return { agreement, participants: [], error: partError.message };
@@ -443,17 +525,17 @@ export class AgreementsService {
   async getByContractId(userId: string, contractId: string) {
     const { data, error } = await this.supabase
       .getClient()
-      .from("agreements")
-      .select("*")
-      .eq("contract_id", contractId)
+      .from('agreements')
+      .select('*')
+      .eq('contract_id', contractId)
       .maybeSingle();
 
     if (error) {
-      if (error.code === "PGRST116") {
+      if (error.code === 'PGRST116') {
         return {
           agreement: null,
           error:
-            "Ningún acuerdo tiene contract_id igual a este valor (revisá Supabase o hacé PATCH link-contract antes).",
+            'Ningún acuerdo tiene contract_id igual a este valor (revisá Supabase o hacé PATCH link-contract antes).',
         };
       }
       return { agreement: null, error: error.message };
@@ -462,7 +544,7 @@ export class AgreementsService {
       return {
         agreement: null,
         error:
-          "Ningún acuerdo tiene contract_id igual a este valor (copiá el texto exacto de la columna contract_id).",
+          'Ningún acuerdo tiene contract_id igual a este valor (copiá el texto exacto de la columna contract_id).',
       };
     }
 
@@ -470,35 +552,104 @@ export class AgreementsService {
     return { agreement: data, error: null };
   }
 
+  /**
+   * Shared side-effect path for Agreement status changes.
+   * Used by DisputesService (and any other internal caller) so dispute-driven
+   * updates emit the same activity log shape and domain events as updateStatus.
+   */
+  async applyStatusChange(
+    agreementId: string,
+    actorWallet: string,
+    toStatus: string,
+    options: {
+      fromStatus?: string;
+      enforceTransition?: boolean;
+      activityDetails?: Record<string, unknown>;
+    } = {},
+  ): Promise<{ success: boolean; error: string | null; fromStatus?: string }> {
+    const { data: current, error: fetchError } = await this.supabase
+      .getClient()
+      .from('agreements')
+      .select('status, title, amount, asset')
+      .eq('id', agreementId)
+      .single();
+
+    if (fetchError || !current) {
+      return { success: false, error: fetchError?.message || 'Agreement not found' };
+    }
+
+    const fromStatus = options.fromStatus ?? (current.status as string);
+
+    if (options.enforceTransition) {
+      const tv = this.validation.validateTransition(fromStatus, toStatus);
+      if (!tv.valid) {
+        return { success: false, error: tv.reason };
+      }
+    }
+
+    const updates: Record<string, unknown> = {
+      status: toStatus,
+      updated_at: new Date().toISOString(),
+    };
+    if (toStatus === 'funded') {
+      updates.funded_at = new Date().toISOString();
+    } else if (toStatus === 'completed' || toStatus === 'resolved') {
+      updates.completed_at = new Date().toISOString();
+    }
+
+    const { error } = await this.supabase
+      .getClient()
+      .from('agreements')
+      .update(updates)
+      .eq('id', agreementId);
+
+    if (error) return { success: false, error: error.message };
+
+    await this.activity.logActivity(
+      agreementId,
+      actorWallet,
+      `status_changed_to_${toStatus}`,
+      {
+        status: toStatus,
+        from: fromStatus,
+        to: toStatus,
+        ...(options.activityDetails ?? {}),
+      },
+      { previousState: fromStatus, newState: toStatus },
+    );
+
+    if (toStatus === 'funded') {
+      this.eventEmitter.emit(AGREEMENT_EVENTS.FUNDED, {
+        agreementId,
+        title: current.title,
+        amount: current.amount,
+        asset: current.asset ?? 'USDC',
+        fundedByWallet: actorWallet,
+      });
+    } else if (toStatus === 'completed' || toStatus === 'resolved') {
+      this.eventEmitter.emit(AGREEMENT_EVENTS.COMPLETED, {
+        agreementId,
+        title: current.title,
+        totalAmount: current.amount,
+        asset: current.asset ?? 'USDC',
+        completedAt: new Date().toISOString(),
+      });
+    }
+
+    return { success: true, error: null, fromStatus };
+  }
+
   async getActivity(userId: string, agreementId: string) {
     await this.assertCanAccessAgreement(userId, agreementId);
 
     const { data, error } = await this.supabase
       .getClient()
-      .from("agreement_activity")
-      .select("*")
-      .eq("agreement_id", agreementId)
-      .order("created_at", { ascending: false });
+      .from('agreement_activity')
+      .select('*')
+      .eq('agreement_id', agreementId)
+      .order('created_at', { ascending: false });
 
     if (error) return { activities: [], error: error.message };
     return { activities: data ?? [], error: null };
-  }
-
-  private async logActivity(
-    agreementId: string,
-    actorWallet: string,
-    action: string,
-    details: Record<string, unknown> = {},
-  ) {
-    try {
-      await this.supabase.getClient().from("agreement_activity").insert({
-        agreement_id: agreementId,
-        actor_wallet: actorWallet,
-        action,
-        details,
-      });
-    } catch (e) {
-      console.error("logAgreementActivity", e);
-    }
   }
 }

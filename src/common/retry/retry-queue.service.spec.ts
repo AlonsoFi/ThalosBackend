@@ -1,6 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { RetryQueueService, type RetryJob } from './retry-queue.service';
+import { RetryQueueService } from './retry-queue.service';
 
 describe('RetryQueueService', () => {
   let service: RetryQueueService;
@@ -23,7 +23,7 @@ describe('RetryQueueService', () => {
     eventEmitter = module.get<EventEmitter2>(EventEmitter2);
 
     // Stop the interval-based processing to avoid interference
-    jest.spyOn(service as any, 'startProcessing').mockImplementation(() => {});
+    jest.spyOn(service as any, 'startProcessing').mockImplementation(jest.fn());
   });
 
   afterEach(() => {
@@ -98,6 +98,7 @@ describe('RetryQueueService', () => {
 
       expect(handler).toHaveBeenCalledWith(job);
       expect(service.getJob(id)!.status).toBe('completed');
+      // eslint-disable-next-line @typescript-eslint/unbound-method
       expect(eventEmitter.emit).toHaveBeenCalledWith('retry.job.completed', {
         jobId: id,
         type: 'happy',
@@ -118,6 +119,7 @@ describe('RetryQueueService', () => {
       expect(service.getJob(id)!.status).toBe('queued'); // re-queued for retry
       expect(service.getJob(id)!.lastError).toBe('Temporary error');
       expect(service.getJob(id)!.nextRetryAt.getTime()).toBeGreaterThan(Date.now());
+      // eslint-disable-next-line @typescript-eslint/unbound-method
       expect(eventEmitter.emit).toHaveBeenCalledWith('retry.job.failed', {
         jobId: id,
         type: 'flaky',
@@ -141,6 +143,7 @@ describe('RetryQueueService', () => {
       await (service as any).processJob(job);
       expect(service.getJob(id)!.retryCount).toBe(2);
       expect(service.getJob(id)!.status).toBe('failed');
+      // eslint-disable-next-line @typescript-eslint/unbound-method
       expect(eventEmitter.emit).toHaveBeenCalledWith('retry.job.maxRetriesReached', {
         jobId: id,
         type: 'doomed',

@@ -80,7 +80,7 @@ export class RetryQueueService implements OnModuleDestroy {
       createdAt: new Date(),
       status: 'queued',
     };
-    this.queue.set(id, job as RetryJob);
+    this.queue.set(id, job);
     this.logger.log(`Enqueued job ${id} (type="${type}")`);
     return id;
   }

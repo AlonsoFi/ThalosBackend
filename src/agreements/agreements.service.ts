@@ -10,12 +10,16 @@ import { LinkContractDto } from "./dto/link-contract.dto";
 import { UpdateAgreementStatusDto } from "./dto/update-status.dto";
 import { UpdateMilestoneDto } from "./dto/update-milestone.dto";
 import { AGREEMENT_EVENTS } from "../common/events/agreement-events.constants";
+import { AgreementSyncService } from "./sync/agreement-sync.service";
+import { AgreementValidationService } from "./validation/agreement-validation.service";
 
 @Injectable()
 export class AgreementsService {
   constructor(
     private readonly supabase: SupabaseService,
     private readonly eventEmitter: EventEmitter2,
+    private readonly syncEngine: AgreementSyncService,
+    private readonly validation: AgreementValidationService,
   ) {}
 
   private async walletForUserId(userId: string): Promise<string | null> {
@@ -154,6 +158,13 @@ export class AgreementsService {
       participantWallets: dto.participants.map((p) => p.wallet_address),
     });
 
+    // 🔁 Trigger sync on creation (if contract_id is present)
+    if (agreement.contract_id) {
+      this.syncEngine.syncAgreement(agreement.id, { useRetryQueue: true }).catch((err) =>
+        console.error("Post-create sync error:", err),
+      );
+    }
+
     return { agreement, error: null };
   }
 
@@ -165,12 +176,23 @@ export class AgreementsService {
     await this.assertCanAccessAgreement(userId, agreementId);
     await this.assertActorWallet(userId, dto.actor_wallet);
 
+    // 🔍 Validate contract_id against Trustless Work BEFORE persisting
+    const validation = await this.syncEngine.validateContractOnTrustless(
+      dto.contract_id,
+    );
+    if (!validation.valid) {
+      return {
+        success: false,
+        error: validation.error ?? "Contract not found on Trustless Work",
+      };
+    }
+
     const { error } = await this.supabase
       .getClient()
       .from("agreements")
       .update({
-        contract_id: dto.contract_id,
-        updated_at: new Date().toISOString(),
+        contract_id:           dto.contract_id,
+        updated_at:            new Date().toISOString(),
       })
       .eq("id", agreementId);
 
@@ -179,6 +201,12 @@ export class AgreementsService {
     await this.logActivity(agreementId, dto.actor_wallet, "contract_linked", {
       contract_id: dto.contract_id,
     });
+
+    // 🔁 Trigger sync after successful link
+    this.syncEngine.syncAgreement(agreementId, { useRetryQueue: true }).catch((err) =>
+      console.error("Post-link sync error:", err),
+    );
+
     return { success: true, error: null };
   }
 
@@ -189,6 +217,26 @@ export class AgreementsService {
   ) {
     await this.assertCanAccessAgreement(userId, agreementId);
     await this.assertActorWallet(userId, dto.actor_wallet);
+
+    // First, fetch the current status for validation
+    const { data: currentAgreement } = await this.supabase
+      .getClient()
+      .from("agreements")
+      .select("status")
+      .eq("id", agreementId)
+      .single();
+
+    if (!currentAgreement) {
+      return { success: false, error: "Agreement not found" };
+    }
+
+    const fromStatus = currentAgreement.status as string;
+
+    // 🛡 Validate the transition before applying
+    const validation = this.validation.validateTransition(fromStatus, dto.status);
+    if (!validation.valid) {
+      return { success: false, error: validation.reason };
+    }
 
     const updates: Record<string, unknown> = {
       status: dto.status,
@@ -213,6 +261,11 @@ export class AgreementsService {
       dto.actor_wallet,
       `status_changed_to_${dto.status}`,
       { status: dto.status },
+    );
+
+    // 🔁 Sync the transition with TW
+    this.syncEngine.syncStatusTransition(agreementId, fromStatus, dto.status).catch((err) =>
+      console.error("Post-status-change sync error:", err),
     );
 
     if (dto.status === "funded") {
@@ -305,6 +358,12 @@ export class AgreementsService {
         milestone_description: milestones[dto.milestone_index].description,
       },
     );
+
+    // 🔁 Trigger sync after milestone update
+    this.syncEngine.syncAgreement(agreementId, { useRetryQueue: true }).catch((err) =>
+      console.error("Post-milestone sync error:", err),
+    );
+
     return { success: true, error: null };
   }
 

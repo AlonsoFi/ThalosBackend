@@ -32,9 +32,17 @@ export async function relayToTrustless(
     });
   }
 
+  const apiKey = process.env.TRUSTLESSWORK_API_KEY;
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
+  if (apiKey) {
+    headers["x-api-key"] = apiKey;
+  }
+
   const res = await fetch(url.toString(), {
     method,
-    headers: { "Content-Type": "application/json" },
+    headers,
     body: method === "POST" ? JSON.stringify(body ?? {}) : undefined,
   });
 

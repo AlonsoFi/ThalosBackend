@@ -14,7 +14,6 @@ import { AGREEMENT_EVENTS } from '../common/events/agreement-events.constants';
 import { milestonesSatisfyCompletion } from './agreement-lifecycle';
 import {
   validateAgreement,
-  validateTransition,
   validateAgreementConsistency,
 } from './agreement.validator';
 import { AgreementActivityService } from './agreement-activity.service';

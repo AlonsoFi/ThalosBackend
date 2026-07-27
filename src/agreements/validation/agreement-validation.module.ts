@@ -1,5 +1,5 @@
-import { Module } from "@nestjs/common";
-import { AgreementValidationService } from "./agreement-validation.service";
+import { Module } from '@nestjs/common';
+import { AgreementValidationService } from './agreement-validation.service';
 
 @Module({
   providers: [AgreementValidationService],

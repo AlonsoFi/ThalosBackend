@@ -1,13 +1,9 @@
-import {
-  Injectable,
-  Logger,
-  OnModuleDestroy,
-} from "@nestjs/common";
-import { EventEmitter2 } from "@nestjs/event-emitter";
+import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
-export type JobStatus = "queued" | "processing" | "completed" | "failed";
+export type JobStatus = 'queued' | 'processing' | 'completed' | 'failed';
 
 export interface RetryJob<T = unknown> {
   id: string;
@@ -21,14 +17,12 @@ export interface RetryJob<T = unknown> {
   status: JobStatus;
 }
 
-export type JobHandler = (
-  job: RetryJob,
-) => Promise<{ success: boolean; error?: string }>;
+export type JobHandler = (job: RetryJob) => Promise<{ success: boolean; error?: string }>;
 
 export interface RetryQueueEvents {
-  "retry.job.completed": { jobId: string; type: string };
-  "retry.job.failed": { jobId: string; type: string; error: string };
-  "retry.job.maxRetriesReached": { jobId: string; type: string; error: string };
+  'retry.job.completed': { jobId: string; type: string };
+  'retry.job.failed': { jobId: string; type: string; error: string };
+  'retry.job.maxRetriesReached': { jobId: string; type: string; error: string };
 }
 
 // ── Constants ──────────────────────────────────────────────────────────────
@@ -74,11 +68,7 @@ export class RetryQueueService implements OnModuleDestroy {
    * Enqueue a new retry job.
    * Returns the generated job id.
    */
-  enqueue<T>(
-    type: string,
-    payload: T,
-    options?: { maxRetries?: number },
-  ): string {
+  enqueue<T>(type: string, payload: T, options?: { maxRetries?: number }): string {
     const id = this.generateId(type);
     const job: RetryJob<T> = {
       id,
@@ -88,7 +78,7 @@ export class RetryQueueService implements OnModuleDestroy {
       maxRetries: options?.maxRetries ?? DEFAULT_MAX_RETRIES,
       nextRetryAt: new Date(), // due immediately
       createdAt: new Date(),
-      status: "queued",
+      status: 'queued',
     };
     this.queue.set(id, job as RetryJob);
     this.logger.log(`Enqueued job ${id} (type="${type}")`);
@@ -108,9 +98,9 @@ export class RetryQueueService implements OnModuleDestroy {
   /** Manually retrigger a failed job. */
   retryJob(id: string): boolean {
     const job = this.queue.get(id);
-    if (!job || job.status !== "failed") return false;
+    if (!job || job.status !== 'failed') return false;
     job.retryCount = 0;
-    job.status = "queued";
+    job.status = 'queued';
     job.lastError = undefined;
     job.nextRetryAt = new Date();
     this.logger.log(`Manually re-queued job ${id}`);
@@ -127,7 +117,7 @@ export class RetryQueueService implements OnModuleDestroy {
   clearCompleted(): number {
     let removed = 0;
     for (const [id, job] of this.queue) {
-      if (job.status === "completed" || job.status === "failed") {
+      if (job.status === 'completed' || job.status === 'failed') {
         this.queue.delete(id);
         removed++;
       }
@@ -150,13 +140,9 @@ export class RetryQueueService implements OnModuleDestroy {
   private startProcessing(): void {
     this.processingTimer = setInterval(() => {
       if (this.destroyed) return;
-      this.processDueJobs().catch((err) =>
-        this.logger.error("RetryQueue processing error", err),
-      );
+      this.processDueJobs().catch((err) => this.logger.error('RetryQueue processing error', err));
     }, POLL_INTERVAL_MS);
-    this.logger.log(
-      `RetryQueue processing started (poll every ${POLL_INTERVAL_MS}ms)`,
-    );
+    this.logger.log(`RetryQueue processing started (poll every ${POLL_INTERVAL_MS}ms)`);
   }
 
   private async processDueJobs(): Promise<void> {
@@ -168,7 +154,7 @@ export class RetryQueueService implements OnModuleDestroy {
       const due: RetryJob[] = [];
 
       for (const job of this.queue.values()) {
-        if (job.status === "queued" && job.nextRetryAt <= now) {
+        if (job.status === 'queued' && job.nextRetryAt <= now) {
           due.push(job);
         }
       }
@@ -192,19 +178,19 @@ export class RetryQueueService implements OnModuleDestroy {
       return;
     }
 
-    job.status = "processing";
+    job.status = 'processing';
 
     try {
       const result = await handler(job);
       if (result.success) {
-        job.status = "completed";
+        job.status = 'completed';
         this.logger.log(`Job ${job.id} completed successfully`);
-        this.eventEmitter.emit("retry.job.completed", {
+        this.eventEmitter.emit('retry.job.completed', {
           jobId: job.id,
           type: job.type,
         });
       } else {
-        throw new Error(result.error ?? "Unknown handler error");
+        throw new Error(result.error ?? 'Unknown handler error');
       }
     } catch (err) {
       job.retryCount++;
@@ -212,25 +198,22 @@ export class RetryQueueService implements OnModuleDestroy {
       job.lastError = errorMessage;
 
       if (job.retryCount >= job.maxRetries) {
-        job.status = "failed";
-        this.logger.error(
-          `Job ${job.id} failed after ${job.retryCount} retries: ${errorMessage}`,
-        );
-        this.eventEmitter.emit("retry.job.maxRetriesReached", {
+        job.status = 'failed';
+        this.logger.error(`Job ${job.id} failed after ${job.retryCount} retries: ${errorMessage}`);
+        this.eventEmitter.emit('retry.job.maxRetriesReached', {
           jobId: job.id,
           type: job.type,
           error: errorMessage,
         });
       } else {
         // Exponential backoff
-        const delayMs =
-          BACKOFF_BASE_MS * Math.pow(BACKOFF_MULTIPLIER, job.retryCount - 1);
+        const delayMs = BACKOFF_BASE_MS * Math.pow(BACKOFF_MULTIPLIER, job.retryCount - 1);
         job.nextRetryAt = new Date(Date.now() + delayMs);
-        job.status = "queued";
+        job.status = 'queued';
         this.logger.warn(
           `Job ${job.id} failed (attempt ${job.retryCount}/${job.maxRetries}), retrying in ${delayMs}ms: ${errorMessage}`,
         );
-        this.eventEmitter.emit("retry.job.failed", {
+        this.eventEmitter.emit('retry.job.failed', {
           jobId: job.id,
           type: job.type,
           error: errorMessage,
@@ -243,7 +226,7 @@ export class RetryQueueService implements OnModuleDestroy {
     jobCounter++;
     const ts = Date.now().toString(36);
     const seq = jobCounter.toString(36);
-    const safeType = type.replace(/[^a-z0-9]/gi, "_").slice(0, 12);
+    const safeType = type.replace(/[^a-z0-9]/gi, '_').slice(0, 12);
     return `${safeType}_${ts}_${seq}`;
   }
 }

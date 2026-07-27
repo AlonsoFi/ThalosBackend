@@ -12,10 +12,7 @@ import { UpdateAgreementStatusDto } from './dto/update-status.dto';
 import { UpdateMilestoneDto } from './dto/update-milestone.dto';
 import { AGREEMENT_EVENTS } from '../common/events/agreement-events.constants';
 import { milestonesSatisfyCompletion } from './agreement-lifecycle';
-import {
-  validateAgreement,
-  validateAgreementConsistency,
-} from './agreement.validator';
+import { validateAgreement, validateAgreementConsistency } from './agreement.validator';
 import { AgreementActivityService } from './agreement-activity.service';
 import { AgreementSyncService } from './sync/agreement-sync.service';
 import { AgreementValidationService } from './validation/agreement-validation.service';
@@ -191,9 +188,9 @@ export class AgreementsService {
 
     // 🔁 Trigger sync on creation (if contract_id is present)
     if (agreement.contract_id) {
-      this.syncEngine.syncAgreement(agreement.id, { useRetryQueue: true }).catch((err) =>
-        console.error('Post-create sync error:', err),
-      );
+      this.syncEngine
+        .syncAgreement(agreement.id, { useRetryQueue: true })
+        .catch((err) => console.error('Post-create sync error:', err));
     }
 
     return { agreement, error: null };
@@ -228,9 +225,9 @@ export class AgreementsService {
     });
 
     // 🔁 Trigger sync after successful link
-    this.syncEngine.syncAgreement(agreementId, { useRetryQueue: true }).catch((err) =>
-      console.error('Post-link sync error:', err),
-    );
+    this.syncEngine
+      .syncAgreement(agreementId, { useRetryQueue: true })
+      .catch((err) => console.error('Post-link sync error:', err));
 
     return { success: true, error: null };
   }
@@ -307,9 +304,9 @@ export class AgreementsService {
     );
 
     // 🔁 Sync the transition with TW
-    this.syncEngine.syncStatusTransition(agreementId, fromStatus, dto.status).catch((err) =>
-      console.error('Post-status-change sync error:', err),
-    );
+    this.syncEngine
+      .syncStatusTransition(agreementId, fromStatus, dto.status)
+      .catch((err) => console.error('Post-status-change sync error:', err));
 
     if (dto.status === 'funded') {
       this.eventEmitter.emit(AGREEMENT_EVENTS.FUNDED, {
@@ -441,9 +438,9 @@ export class AgreementsService {
     }
 
     // 🔁 Trigger sync after milestone update
-    this.syncEngine.syncAgreement(agreementId, { useRetryQueue: true }).catch((err) =>
-      console.error('Post-milestone sync error:', err),
-    );
+    this.syncEngine
+      .syncAgreement(agreementId, { useRetryQueue: true })
+      .catch((err) => console.error('Post-milestone sync error:', err));
 
     return { success: true, error: null };
   }

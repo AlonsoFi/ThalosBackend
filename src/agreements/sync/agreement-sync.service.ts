@@ -1,12 +1,10 @@
-import { Injectable, Logger } from "@nestjs/common";
-import { EventEmitter2 } from "@nestjs/event-emitter";
-import { SupabaseService } from "../../supabase/supabase.service";
-import { RetryQueueService } from "../../common/retry/retry-queue.service";
-import {
-  AgreementValidationService,
-} from "../validation/agreement-validation.service";
-import { relayToTrustless } from "../../internal-trustless/trustless-relay.helper";
-import { AGREEMENT_EVENTS } from "../../common/events/agreement-events.constants";
+import { Injectable, Logger } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
+import { SupabaseService } from '../../supabase/supabase.service';
+import { RetryQueueService } from '../../common/retry/retry-queue.service';
+import { AgreementValidationService } from '../validation/agreement-validation.service';
+import { relayToTrustless } from '../../internal-trustless/trustless-relay.helper';
+import { AGREEMENT_EVENTS } from '../../common/events/agreement-events.constants';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -19,15 +17,15 @@ export interface TrustlessEscrow {
   approver?: string;
   amount: string;
   asset: string;
-  type: "single-release" | "multi-release";
+  type: 'single-release' | 'multi-release';
   milestones?: Array<{
     description: string;
     amount: string;
-    status: "pending" | "approved" | "released";
+    status: 'pending' | 'approved' | 'released';
   }>;
 }
 
-export type SyncDirection = "thalos_to_tw" | "tw_to_thalos" | "already_in_sync";
+export type SyncDirection = 'thalos_to_tw' | 'tw_to_thalos' | 'already_in_sync';
 
 export interface SyncResult {
   synced: boolean;
@@ -53,22 +51,22 @@ export interface ValidateContractResult {
 
 /** Trustless Work escrow status → Thalos agreement status. */
 const TW_TO_THALOS_STATUS: Record<string, string> = {
-  created:   "pending",
-  funded:    "funded",
-  active:    "active",
-  completed: "completed",
-  cancelled: "cancelled",
-  disputed:  "disputed",
+  created: 'pending',
+  funded: 'funded',
+  active: 'active',
+  completed: 'completed',
+  cancelled: 'cancelled',
+  disputed: 'disputed',
 };
 
 /** Thalos agreement status → Trustless Work escrow status (informational). */
 const THALOS_TO_TW_STATUS: Record<string, string> = {
-  pending:   "created",
-  funded:    "funded",
-  active:    "active",
-  completed: "completed",
-  cancelled: "cancelled",
-  disputed:  "disputed",
+  pending: 'created',
+  funded: 'funded',
+  active: 'active',
+  completed: 'completed',
+  cancelled: 'cancelled',
+  disputed: 'disputed',
   // "in_review" and "resolved" are Thalos-only — no TW mapping.
 };
 
@@ -85,24 +83,21 @@ export class AgreementSyncService {
     private readonly retryQueue: RetryQueueService,
   ) {
     // Register handler so the retry queue can process sync jobs
-    this.retryQueue.registerHandler("sync_agreement", async (job) => {
+    this.retryQueue.registerHandler('sync_agreement', async (job) => {
       const payload = job.payload as { agreementId: string };
       const result = await this.doSync(payload.agreementId);
       return {
         success: result.errors.length === 0,
-        error: result.errors.join("; "),
+        error: result.errors.join('; '),
       };
     });
 
-    this.retryQueue.registerHandler("reconcile_agreement", async (job) => {
+    this.retryQueue.registerHandler('reconcile_agreement', async (job) => {
       const payload = job.payload as { agreementId: string };
       const result = await this.doReconcile(payload.agreementId);
       return {
         success: result.reconciled,
-        error:
-          result.actions.length === 0
-            ? "Reconciliation did not change state"
-            : undefined,
+        error: result.actions.length === 0 ? 'Reconciliation did not change state' : undefined,
       };
     });
   }
@@ -113,9 +108,7 @@ export class AgreementSyncService {
    * Validate that a contract_id exists on Trustless Work.
    * Used by linkContract to reject invalid contract_ids before persisting.
    */
-  async validateContractOnTrustless(
-    contractId: string,
-  ): Promise<ValidateContractResult> {
+  async validateContractOnTrustless(contractId: string): Promise<ValidateContractResult> {
     try {
       const escrow = await this.fetchTrustlessEscrow(contractId);
       if (!escrow) {
@@ -142,10 +135,10 @@ export class AgreementSyncService {
     options?: { useRetryQueue?: boolean },
   ): Promise<SyncResult> {
     if (options?.useRetryQueue) {
-      this.retryQueue.enqueue("sync_agreement", { agreementId });
+      this.retryQueue.enqueue('sync_agreement', { agreementId });
       return {
         synced: false,
-        actions: ["Enqueued sync job to retry queue"],
+        actions: ['Enqueued sync job to retry queue'],
         errors: [],
       };
     }
@@ -161,10 +154,10 @@ export class AgreementSyncService {
     options?: { useRetryQueue?: boolean },
   ): Promise<ReconcileResult> {
     if (options?.useRetryQueue) {
-      this.retryQueue.enqueue("reconcile_agreement", { agreementId });
+      this.retryQueue.enqueue('reconcile_agreement', { agreementId });
       return {
         reconciled: false,
-        actions: ["Enqueued reconcile job to retry queue"],
+        actions: ['Enqueued reconcile job to retry queue'],
       };
     }
     return this.doReconcile(agreementId);
@@ -187,7 +180,7 @@ export class AgreementSyncService {
     const validation = this.validation.validateTransition(fromStatus, toStatus);
     if (!validation.valid) {
       errors.push(validation.reason);
-      await this.logSyncActivity(agreementId, "transition_rejected", {
+      await this.logSyncActivity(agreementId, 'transition_rejected', {
         from: fromStatus,
         to: toStatus,
         reason: validation.reason,
@@ -200,13 +193,13 @@ export class AgreementSyncService {
     // 2. Fetch agreement data
     const { data: agreement } = await this.supabase
       .getClient()
-      .from("agreements")
-      .select("*")
-      .eq("id", agreementId)
+      .from('agreements')
+      .select('*')
+      .eq('id', agreementId)
       .single();
 
     if (!agreement) {
-      errors.push("Agreement not found");
+      errors.push('Agreement not found');
       return { synced: false, actions, errors };
     }
 
@@ -224,32 +217,32 @@ export class AgreementSyncService {
     }
 
     // 4. Emit appropriate lifecycle events
-    if (toStatus === "funded") {
+    if (toStatus === 'funded') {
       this.eventEmitter.emit(AGREEMENT_EVENTS.FUNDED, {
         agreementId,
         title: agreement.title,
         amount: agreement.amount,
-        asset: agreement.asset ?? "USDC",
+        asset: agreement.asset ?? 'USDC',
         fundedByWallet: agreement.created_by,
       });
-    } else if (toStatus === "completed" || toStatus === "resolved") {
+    } else if (toStatus === 'completed' || toStatus === 'resolved') {
       this.eventEmitter.emit(AGREEMENT_EVENTS.COMPLETED, {
         agreementId,
         title: agreement.title,
         totalAmount: agreement.amount,
-        asset: agreement.asset ?? "USDC",
+        asset: agreement.asset ?? 'USDC',
         completedAt: new Date().toISOString(),
       });
     }
 
     // 5. Log sync activity
-    await this.logSyncActivity(agreementId, "transition_applied", {
+    await this.logSyncActivity(agreementId, 'transition_applied', {
       from: fromStatus,
       to: toStatus,
       contractId: agreement.contract_id,
     });
 
-    return { synced: true, direction: "thalos_to_tw", actions, errors };
+    return { synced: true, direction: 'thalos_to_tw', actions, errors };
   }
 
   /**
@@ -257,20 +250,18 @@ export class AgreementSyncService {
    * Tries the escrow-specific endpoint first, then falls back to helper endpoints.
    * Returns null if the contract doesn't exist on TW or isn't reachable.
    */
-  async fetchTrustlessEscrow(
-    contractId: string,
-  ): Promise<TrustlessEscrow | null> {
+  async fetchTrustlessEscrow(contractId: string): Promise<TrustlessEscrow | null> {
     try {
       // Try direct escrow lookup first (standard REST pattern)
       const directResult = await relayToTrustless(
-        "GET",
+        'GET',
         `escrow/${encodeURIComponent(contractId)}`,
       );
 
       if (directResult.status >= 200 && directResult.status < 300 && directResult.data) {
         const data = directResult.data as TrustlessEscrow | TrustlessEscrow[];
         return Array.isArray(data)
-          ? data.find((e) => e.id === contractId) ?? data[0] ?? null
+          ? (data.find((e) => e.id === contractId) ?? data[0] ?? null)
           : data;
       }
 
@@ -279,11 +270,9 @@ export class AgreementSyncService {
         `Direct escrow lookup failed for ${contractId} (${directResult.status}), trying helper fallback`,
       );
 
-      const fallbackResult = await relayToTrustless(
-        "GET",
-        "helper/get-escrows-by-signer",
-        { signer: contractId },
-      );
+      const fallbackResult = await relayToTrustless('GET', 'helper/get-escrows-by-signer', {
+        signer: contractId,
+      });
 
       if (fallbackResult.status >= 400) {
         this.logger.warn(
@@ -316,99 +305,93 @@ export class AgreementSyncService {
     // 1. Fetch Thalos agreement
     const { data: agreement, error: fetchErr } = await this.supabase
       .getClient()
-      .from("agreements")
-      .select("*")
-      .eq("id", agreementId)
+      .from('agreements')
+      .select('*')
+      .eq('id', agreementId)
       .single();
 
     if (fetchErr || !agreement) {
-      errors.push(fetchErr?.message ?? "Agreement not found");
+      errors.push(fetchErr?.message ?? 'Agreement not found');
       return { synced: false, actions, errors };
     }
 
     if (!agreement.contract_id) {
-      actions.push("No contract_id linked — skipping TW sync");
+      actions.push('No contract_id linked — skipping TW sync');
       return { synced: true, actions, errors };
     }
 
     // 2. Fetch TW escrow
     const escrow = await this.fetchTrustlessEscrow(agreement.contract_id);
     if (!escrow) {
-      errors.push("Could not fetch escrow from Trustless Work");
-      await this.logSyncActivity(agreementId, "fetch_failed", {
+      errors.push('Could not fetch escrow from Trustless Work');
+      await this.logSyncActivity(agreementId, 'fetch_failed', {
         contractId: agreement.contract_id,
       });
       return { synced: false, actions, errors };
     }
 
-    actions.push(
-      `Fetched escrow ${agreement.contract_id} from TW (status: ${escrow.status})`,
-    );
+    actions.push(`Fetched escrow ${agreement.contract_id} from TW (status: ${escrow.status})`);
 
     // 3. Map TW status → Thalos status
     const twMappedStatus = TW_TO_THALOS_STATUS[escrow.status] ?? escrow.status;
-    const currentStatus = (agreement.status as string) ?? "pending";
+    const currentStatus = (agreement.status as string) ?? 'pending';
 
     // 4. Compare and decide sync direction
     if (currentStatus === twMappedStatus) {
-      actions.push("Statuses match — already in sync");
-      await this.logSyncActivity(agreementId, "already_in_sync", {
+      actions.push('Statuses match — already in sync');
+      await this.logSyncActivity(agreementId, 'already_in_sync', {
         status: currentStatus,
         contractId: agreement.contract_id,
       });
-      return { synced: true, direction: "already_in_sync", actions, errors };
+      return { synced: true, direction: 'already_in_sync', actions, errors };
     }
 
     // Determine which side is ahead using lifecycle ordering
-    const statusOrder = [
-      "pending", "funded", "active", "in_review", "completed",
-    ];
+    const statusOrder = ['pending', 'funded', 'active', 'in_review', 'completed'];
     const twIdx = statusOrder.indexOf(twMappedStatus);
     const thIdx = statusOrder.indexOf(currentStatus);
 
     let direction: SyncDirection;
     if (twIdx > thIdx) {
       // TW is further along → pull into Thalos
-      direction = "tw_to_thalos";
+      direction = 'tw_to_thalos';
     } else if (thIdx > twIdx) {
       // Thalos is further along → log that client-side action is needed
-      direction = "thalos_to_tw";
+      direction = 'thalos_to_tw';
     } else {
       // Same position but different string → prefer TW state
-      direction = "tw_to_thalos";
+      direction = 'tw_to_thalos';
     }
 
     actions.push(
       `Sync direction: ${direction} (Thalos: "${currentStatus}", TW mapped: "${twMappedStatus}")`,
     );
 
-    if (direction === "tw_to_thalos") {
+    if (direction === 'tw_to_thalos') {
       // Pull TW state into Thalos
       const { error: updateErr } = await this.supabase
         .getClient()
-        .from("agreements")
+        .from('agreements')
         .update({
           status: twMappedStatus,
           updated_at: new Date().toISOString(),
         })
-        .eq("id", agreementId);
+        .eq('id', agreementId);
 
       if (updateErr) {
         errors.push(`Failed to update Thalos status: ${updateErr.message}`);
         return { synced: false, direction, actions, errors };
       }
 
-      actions.push(
-        `Status updated in Thalos: "${currentStatus}" → "${twMappedStatus}"`,
-      );
+      actions.push(`Status updated in Thalos: "${currentStatus}" → "${twMappedStatus}"`);
 
       // Sync participants if available
       if (escrow.sender || escrow.receiver) {
         await this.syncParticipants(agreementId, escrow);
-        actions.push("Participants synced from TW");
+        actions.push('Participants synced from TW');
       }
 
-      await this.logSyncActivity(agreementId, "pulled_from_tw", {
+      await this.logSyncActivity(agreementId, 'pulled_from_tw', {
         fromStatus: currentStatus,
         toStatus: twMappedStatus,
         twRawStatus: escrow.status,
@@ -420,7 +403,7 @@ export class AgreementSyncService {
       actions.push(
         `Thalos status "${currentStatus}" is ahead of TW "${twMappedStatus}" — deploy/fund/complete on TW client-side`,
       );
-      await this.logSyncActivity(agreementId, "push_pending", {
+      await this.logSyncActivity(agreementId, 'push_pending', {
         fromStatus: currentStatus,
         toStatus: twMappedStatus,
         contractId: agreement.contract_id,
@@ -433,7 +416,7 @@ export class AgreementSyncService {
   private async doReconcile(agreementId: string): Promise<ReconcileResult> {
     const syncResult = await this.doSync(agreementId);
 
-    if (syncResult.direction === "already_in_sync") {
+    if (syncResult.direction === 'already_in_sync') {
       return {
         reconciled: true,
         actions: syncResult.actions,
@@ -443,8 +426,8 @@ export class AgreementSyncService {
     if (!syncResult.synced && syncResult.errors.length > 0) {
       return {
         reconciled: false,
-        divergence: syncResult.errors.join("; "),
-        resolution: "Could not reconcile — errors during sync",
+        divergence: syncResult.errors.join('; '),
+        resolution: 'Could not reconcile — errors during sync',
         actions: syncResult.actions,
       };
     }
@@ -453,9 +436,9 @@ export class AgreementSyncService {
     const actions = [...syncResult.actions];
     const { data: agreement } = await this.supabase
       .getClient()
-      .from("agreements")
-      .select("contract_id, status, milestones")
-      .eq("id", agreementId)
+      .from('agreements')
+      .select('contract_id, status, milestones')
+      .eq('id', agreementId)
       .single();
 
     if (agreement?.contract_id) {
@@ -469,11 +452,7 @@ export class AgreementSyncService {
             status: string;
           }>;
 
-          for (
-            let i = 0;
-            i < Math.min(thalosMilestones.length, escrow.milestones.length);
-            i++
-          ) {
+          for (let i = 0; i < Math.min(thalosMilestones.length, escrow.milestones.length); i++) {
             if (thalosMilestones[i].status !== escrow.milestones[i].status) {
               thalosMilestones[i].status = escrow.milestones[i].status;
               actions.push(
@@ -484,15 +463,15 @@ export class AgreementSyncService {
 
           await this.supabase
             .getClient()
-            .from("agreements")
+            .from('agreements')
             .update({
               milestones: thalosMilestones,
               updated_at: new Date().toISOString(),
             })
-            .eq("id", agreementId);
+            .eq('id', agreementId);
         }
 
-        await this.logSyncActivity(agreementId, "reconcile_completed", {
+        await this.logSyncActivity(agreementId, 'reconcile_completed', {
           thalosStatus: agreement.status,
           twStatus: escrow.status,
           milestonesReconciled: escrow.milestones?.length ?? 0,
@@ -502,26 +481,21 @@ export class AgreementSyncService {
 
     return {
       reconciled: actions.length > 0,
-      divergence: syncResult.direction
-        ? `Status divergence: Thalos vs TW`
-        : undefined,
-      resolution: "Divergence corrected",
+      divergence: syncResult.direction ? `Status divergence: Thalos vs TW` : undefined,
+      resolution: 'Divergence corrected',
       actions,
     };
   }
 
   /** Sync participants from a TW escrow into Thalos. */
-  private async syncParticipants(
-    agreementId: string,
-    escrow: TrustlessEscrow,
-  ): Promise<void> {
+  private async syncParticipants(agreementId: string, escrow: TrustlessEscrow): Promise<void> {
     const existingRoles = new Set<string>();
 
     const { data: existing } = await this.supabase
       .getClient()
-      .from("agreement_participants")
-      .select("wallet_address, role")
-      .eq("agreement_id", agreementId);
+      .from('agreement_participants')
+      .select('wallet_address, role')
+      .eq('agreement_id', agreementId);
 
     if (existing) {
       for (const p of existing) {
@@ -539,26 +513,26 @@ export class AgreementSyncService {
       toInsert.push({
         agreement_id: agreementId,
         wallet_address: escrow.sender,
-        role: "sender",
+        role: 'sender',
       });
     }
     if (escrow.receiver && !existingRoles.has(`${escrow.receiver}:receiver`)) {
       toInsert.push({
         agreement_id: agreementId,
         wallet_address: escrow.receiver,
-        role: "receiver",
+        role: 'receiver',
       });
     }
     if (escrow.approver && !existingRoles.has(`${escrow.approver}:approver`)) {
       toInsert.push({
         agreement_id: agreementId,
         wallet_address: escrow.approver,
-        role: "approver",
+        role: 'approver',
       });
     }
 
     if (toInsert.length > 0) {
-      await this.supabase.getClient().from("agreement_participants").insert(toInsert);
+      await this.supabase.getClient().from('agreement_participants').insert(toInsert);
     }
   }
 
@@ -569,15 +543,18 @@ export class AgreementSyncService {
     details: Record<string, unknown> = {},
   ): Promise<void> {
     try {
-      await this.supabase.getClient().from("agreement_activity").insert({
-        agreement_id: agreementId,
-        actor_wallet: "SYNC_ENGINE",
-        action: `sync_${action}`,
-        details: {
-          ...details,
-          timestamp: new Date().toISOString(),
-        },
-      });
+      await this.supabase
+        .getClient()
+        .from('agreement_activity')
+        .insert({
+          agreement_id: agreementId,
+          actor_wallet: 'SYNC_ENGINE',
+          action: `sync_${action}`,
+          details: {
+            ...details,
+            timestamp: new Date().toISOString(),
+          },
+        });
     } catch (e) {
       this.logger.error(`Failed to log sync activity for ${agreementId}`, e);
     }

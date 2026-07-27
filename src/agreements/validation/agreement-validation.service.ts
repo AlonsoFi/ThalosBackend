@@ -1,29 +1,35 @@
-import { Injectable, Logger } from "@nestjs/common";
+import { Injectable, Logger } from '@nestjs/common';
 
 /**
  * Known lifecycle statuses for Thalos agreements.
  * Maps to Trustless Work statuses via the sync engine.
+ * Aligned with agreement-lifecycle.ts as the single source of truth.
  */
 export type AgreementStatus =
-  | "pending"
-  | "funded"
-  | "active"
-  | "in_review"
-  | "completed"
-  | "cancelled"
-  | "disputed"
-  | "resolved";
+  | 'draft'
+  | 'pending'
+  | 'funded'
+  | 'active'
+  | 'in_review'
+  | 'completed'
+  | 'cancelled'
+  | 'disputed'
+  | 'resolved';
 
-/** Centralized valid transition map — single source of truth. */
+/**
+ * Centralized valid transition map.
+ * Derived from agreement-lifecycle.ts AGREEMENT_TRANSITIONS.
+ */
 const VALID_TRANSITIONS: Record<AgreementStatus, AgreementStatus[]> = {
-  pending:  ["funded", "cancelled"],
-  funded:   ["active", "cancelled"],
-  active:   ["completed", "in_review", "disputed", "cancelled"],
-  in_review:["completed", "disputed"],
-  completed:[],          // terminal
-  cancelled:[],          // terminal
-  disputed: ["resolved", "active", "cancelled"],
-  resolved: [],          // terminal
+  draft: ['pending', 'cancelled'],
+  pending: ['funded', 'active', 'cancelled'],
+  funded: ['active', 'cancelled'],
+  active: ['in_review', 'disputed', 'cancelled'],
+  in_review: ['completed', 'active', 'disputed'],
+  disputed: ['resolved', 'active'],
+  completed: [], // terminal
+  cancelled: [], // terminal
+  resolved: [], // terminal
 };
 
 @Injectable()
@@ -34,10 +40,7 @@ export class AgreementValidationService {
    * Validate a state transition.
    * Returns `{ valid: true }` or `{ valid: false, reason: "..." }`.
    */
-  validateTransition(
-    from: string,
-    to: string,
-  ): { valid: true } | { valid: false; reason: string } {
+  validateTransition(from: string, to: string): { valid: true } | { valid: false; reason: string } {
     if (!(from in VALID_TRANSITIONS)) {
       return { valid: false, reason: `Unknown source status: "${from}"` };
     }
@@ -49,14 +52,17 @@ export class AgreementValidationService {
     const toStatus = to as AgreementStatus;
 
     if (from === to) {
-      return { valid: false, reason: `Transition to the same status ("${from}" → "${to}") is a no-op` };
+      return {
+        valid: false,
+        reason: `Transition to the same status ("${from}" → "${to}") is a no-op`,
+      };
     }
 
     const allowed = VALID_TRANSITIONS[fromStatus];
     if (!allowed.includes(toStatus)) {
       return {
         valid: false,
-        reason: `Invalid transition: "${from}" → "${to}". Allowed targets: ${allowed.join(", ") || "(none — terminal state)"}`,
+        reason: `Invalid transition: "${from}" → "${to}". Allowed targets: ${allowed.join(', ') || '(none — terminal state)'}`,
       };
     }
 

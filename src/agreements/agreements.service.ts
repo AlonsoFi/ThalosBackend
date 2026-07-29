@@ -12,12 +12,10 @@ import { UpdateAgreementStatusDto } from './dto/update-status.dto';
 import { UpdateMilestoneDto } from './dto/update-milestone.dto';
 import { AGREEMENT_EVENTS } from '../common/events/agreement-events.constants';
 import { milestonesSatisfyCompletion } from './agreement-lifecycle';
-import {
-  validateAgreement,
-  validateTransition,
-  validateAgreementConsistency,
-} from './agreement.validator';
+import { validateAgreement, validateAgreementConsistency } from './agreement.validator';
 import { AgreementActivityService } from './agreement-activity.service';
+import { AgreementSyncService } from './sync/agreement-sync.service';
+import { AgreementValidationService } from './validation/agreement-validation.service';
 
 @Injectable()
 export class AgreementsService {
@@ -25,6 +23,8 @@ export class AgreementsService {
     private readonly supabase: SupabaseService,
     private readonly eventEmitter: EventEmitter2,
     private readonly activity: AgreementActivityService,
+    private readonly syncEngine: AgreementSyncService,
+    private readonly validation: AgreementValidationService,
   ) {}
 
   private async walletForUserId(userId: string): Promise<string | null> {
@@ -186,12 +186,28 @@ export class AgreementsService {
       participantWallets: dto.participants.map((p) => p.wallet_address),
     });
 
+    // 🔁 Trigger sync on creation (if contract_id is present)
+    if (agreement.contract_id) {
+      this.syncEngine
+        .syncAgreement(agreement.id, { useRetryQueue: true })
+        .catch((err) => console.error('Post-create sync error:', err));
+    }
+
     return { agreement, error: null };
   }
 
   async linkContract(userId: string, agreementId: string, dto: LinkContractDto) {
     await this.assertCanAccessAgreement(userId, agreementId);
     await this.assertActorWallet(userId, dto.actor_wallet);
+
+    // 🔍 Validate contract_id against Trustless Work BEFORE persisting
+    const twValidation = await this.syncEngine.validateContractOnTrustless(dto.contract_id);
+    if (!twValidation.valid) {
+      return {
+        success: false,
+        error: twValidation.error ?? 'Contract not found on Trustless Work',
+      };
+    }
 
     const { error } = await this.supabase
       .getClient()
@@ -207,6 +223,12 @@ export class AgreementsService {
     await this.activity.logActivity(agreementId, dto.actor_wallet, 'contract_linked', {
       contract_id: dto.contract_id,
     });
+
+    // 🔁 Trigger sync after successful link
+    this.syncEngine
+      .syncAgreement(agreementId, { useRetryQueue: true })
+      .catch((err) => console.error('Post-link sync error:', err));
+
     return { success: true, error: null };
   }
 
@@ -227,11 +249,13 @@ export class AgreementsService {
 
     const fromStatus = current.status as string;
 
-    const transitionValidation = validateTransition(fromStatus, dto.status);
-    if (!transitionValidation.success) {
-      throw new BadRequestException({ success: false, error: transitionValidation.error });
+    // 🛡 Validate transition using centralized validation layer
+    const transitionValidation = this.validation.validateTransition(fromStatus, dto.status);
+    if (!transitionValidation.valid) {
+      throw new BadRequestException({ success: false, error: transitionValidation.reason });
     }
 
+    // Main's additional validation: milestones must be satisfied for completion
     if (dto.status === 'completed' && !milestonesSatisfyCompletion(current.milestones)) {
       throw new BadRequestException({
         success: false,
@@ -278,6 +302,11 @@ export class AgreementsService {
       },
       { previousState: fromStatus, newState: dto.status },
     );
+
+    // 🔁 Sync the transition with TW
+    this.syncEngine
+      .syncStatusTransition(agreementId, fromStatus, dto.status)
+      .catch((err) => console.error('Post-status-change sync error:', err));
 
     if (dto.status === 'funded') {
       this.eventEmitter.emit(AGREEMENT_EVENTS.FUNDED, {
@@ -407,6 +436,11 @@ export class AgreementsService {
         approvedByWallet: dto.actor_wallet,
       });
     }
+
+    // 🔁 Trigger sync after milestone update
+    this.syncEngine
+      .syncAgreement(agreementId, { useRetryQueue: true })
+      .catch((err) => console.error('Post-milestone sync error:', err));
 
     return { success: true, error: null };
   }
@@ -543,12 +577,9 @@ export class AgreementsService {
     const fromStatus = options.fromStatus ?? (current.status as string);
 
     if (options.enforceTransition) {
-      const transitionValidation = validateTransition(fromStatus, toStatus);
-      if (!transitionValidation.success) {
-        return {
-          success: false,
-          error: transitionValidation.error?.details[0]?.message ?? 'Invalid transition',
-        };
+      const tv = this.validation.validateTransition(fromStatus, toStatus);
+      if (!tv.valid) {
+        return { success: false, error: tv.reason };
       }
     }
 

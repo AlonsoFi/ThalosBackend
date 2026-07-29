@@ -22,6 +22,8 @@ import { validate } from 'class-validator';
 import { plainToInstance } from 'class-transformer';
 import { AgreementsService } from './agreements.service';
 import { AgreementActivityService } from './agreement-activity.service';
+import { AgreementSyncService } from './sync/agreement-sync.service';
+import { AgreementValidationService } from './validation/agreement-validation.service';
 import { DisputesService } from '../disputes/disputes.service';
 import { UpdateAgreementStatusDto } from './dto/update-status.dto';
 import type { SupabaseService } from '../supabase/supabase.service';
@@ -394,10 +396,19 @@ describe('AgreementsService lifecycle enforcement (business rules)', () => {
     db = new InMemoryDb();
     emit = jest.fn();
     const activity = new AgreementActivityService(db as unknown as SupabaseService);
+    const syncEngine = {
+      syncAgreement: jest.fn().mockResolvedValue({ synced: true, actions: [] }),
+      syncStatusTransition: jest.fn().mockResolvedValue({ synced: true }),
+      validateContractOnTrustless: jest.fn().mockResolvedValue({ valid: true }),
+      reconcileAgreement: jest.fn().mockResolvedValue({ reconciled: true, actions: [] }),
+    } as unknown as AgreementSyncService;
+    const validation = new AgreementValidationService();
     service = new AgreementsService(
       db as unknown as SupabaseService,
       { emit } as unknown as EventEmitter2,
       activity,
+      syncEngine,
+      validation,
     );
   });
 
@@ -861,7 +872,20 @@ describe('Dispute flows drive the agreement lifecycle', () => {
     emit = jest.fn();
     const emitter = { emit } as unknown as EventEmitter2;
     const activity = new AgreementActivityService(db as unknown as SupabaseService);
-    agreements = new AgreementsService(db as unknown as SupabaseService, emitter, activity);
+    const disputeSyncEngine = {
+      syncAgreement: jest.fn().mockResolvedValue({ synced: true, actions: [] }),
+      syncStatusTransition: jest.fn().mockResolvedValue({ synced: true }),
+      validateContractOnTrustless: jest.fn().mockResolvedValue({ valid: true }),
+      reconcileAgreement: jest.fn().mockResolvedValue({ reconciled: true, actions: [] }),
+    } as unknown as AgreementSyncService;
+    const disputeValidation = new AgreementValidationService();
+    agreements = new AgreementsService(
+      db as unknown as SupabaseService,
+      emitter,
+      activity,
+      disputeSyncEngine,
+      disputeValidation,
+    );
     disputes = new DisputesService(db as unknown as SupabaseService, agreements, emitter, activity);
 
     db.insert('agreements', {

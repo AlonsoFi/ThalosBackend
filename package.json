@@ -15,6 +15,7 @@
     "format": "prettier --write \"src/**/*.ts\"",
     "format:check": "prettier --check \"src/**/*.ts\"",
     "test": "jest",
+    "test:verbose": "jest --verbose",
     "test:integration": "jest integration --runInBand",
     "test:cov": "jest --coverage",
     "test:load": "node test/load/run-all.js",

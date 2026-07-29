@@ -13,6 +13,8 @@ import { SupabaseService } from '../supabase/supabase.service';
 import { ApiClient } from '../common/api/api-client';
 import { AgreementsController } from '../agreements/agreements.controller';
 import { AgreementActivityService } from '../agreements/agreement-activity.service';
+import { AgreementSyncService } from '../agreements/sync/agreement-sync.service';
+import { AgreementValidationService } from '../agreements/validation/agreement-validation.service';
 import { AgreementsService } from '../agreements/agreements.service';
 import { DisputesController } from '../disputes/disputes.controller';
 import { DisputesService } from '../disputes/disputes.service';
@@ -368,6 +370,16 @@ describe('migrated backend flows (integration)', () => {
         DisputesService,
         WalletsService,
         AgreementChatService,
+        {
+          provide: AgreementSyncService,
+          useValue: {
+            syncAgreement: jest.fn().mockResolvedValue({ synced: true }),
+            syncStatusTransition: jest.fn().mockResolvedValue({ synced: true }),
+            validateContractOnTrustless: jest.fn().mockResolvedValue({ valid: true }),
+            reconcileAgreement: jest.fn().mockResolvedValue({ reconciled: true }),
+          },
+        },
+        AgreementValidationService,
         { provide: SupabaseService, useValue: supabase },
         { provide: ApiClient, useValue: apiClient },
         { provide: ConfigService, useValue: { get: jest.fn(() => JWT_SECRET) } },

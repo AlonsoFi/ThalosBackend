@@ -19,7 +19,6 @@ import { WebhooksModule } from './webhooks/webhooks.module';
 import { RetryQueueModule } from './retry-queue/retry-queue.module';
 import { VerificationModule } from './verification/verification.module';
 import { KybModule } from './kyb/kyb.module';
-import { MilestoneSyncModule } from './milestone-sync/milestone-sync.module';
 
 @Module({
   imports: [
@@ -42,7 +41,6 @@ import { MilestoneSyncModule } from './milestone-sync/milestone-sync.module';
     WebhooksModule,
     VerificationModule,
     KybModule,
-    MilestoneSyncModule,
   ],
   controllers: [RootController],
 })

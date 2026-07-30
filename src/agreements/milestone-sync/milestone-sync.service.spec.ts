@@ -110,26 +110,38 @@ describe('MilestoneSyncService', () => {
       expect(svc.detectConflict('pending', 'pending')).toBe(false);
     });
 
-    it('returns false when local is terminal and TW is also terminal', () => {
+    it('returns false when TW is terminal but local has not yet settled — normal apply path', () => {
       const { svc } = buildService();
-      expect(svc.detectConflict('released', 'approved')).toBe(false);
+      // "TW is terminal, local is not" is the standard reconcile case — reconcileAgreement
+      // should apply the TW state; returning true here would incorrectly block it.
+      expect(svc.detectConflict('pending', 'approved')).toBe(false);
     });
 
-    it('returns true when TW is "approved" but local is "pending"', () => {
+    it('returns false when TW is "released" but local is "pending" — also a normal apply path', () => {
       const { svc } = buildService();
-      expect(svc.detectConflict('pending', 'approved')).toBe(true);
+      expect(svc.detectConflict('pending', 'released')).toBe(false);
     });
 
-    it('returns true when TW is "released" but local is "pending"', () => {
+    it('returns false when local is "approved" and TW is "released" (valid forward progression)', () => {
       const { svc } = buildService();
-      expect(svc.detectConflict('pending', 'released')).toBe(true);
-    });
-
-    it('returns false when TW is "released" and local is "approved" (both are terminal — normal progression)', () => {
-      const { svc } = buildService();
-      // 'approved' is already a terminal state; TW moving to 'released' is an expected
-      // forward progression, not a hidden conflict.
+      // approved → released is the standard completion sequence; TW being one step ahead is not a conflict.
       expect(svc.detectConflict('approved', 'released')).toBe(false);
+    });
+
+    it('returns true when both sides have reached divergent terminal states (local=released, TW=approved)', () => {
+      const { svc } = buildService();
+      // Local somehow advanced to released while TW only reports approved — divergent, needs review.
+      expect(svc.detectConflict('released', 'approved')).toBe(true);
+    });
+
+    it('returns true when local is "cancelled" but TW is "approved" — incompatible terminal states', () => {
+      const { svc } = buildService();
+      expect(svc.detectConflict('cancelled', 'approved')).toBe(true);
+    });
+
+    it('returns true when local is "rejected" but TW is "approved" — incompatible terminal states', () => {
+      const { svc } = buildService();
+      expect(svc.detectConflict('rejected', 'approved')).toBe(true);
     });
   });
 
@@ -143,11 +155,13 @@ describe('MilestoneSyncService', () => {
       ).toBe('skipped');
     });
 
-    it('returns "conflict" when TW is terminal but local has not reached it', () => {
+    it('returns "applied" when TW is terminal but local has not yet settled (normal reconcile path)', () => {
       const { svc } = buildService();
+      // This is the most common TW→Thalos case: TW advanced to approved, local is still pending.
+      // reconcileAgreement should write the TW state — not treat it as a conflict.
       expect(
         svc.applyTWMilestoneUpdate({ currentLocalStatus: 'pending', twStatus: 'approved' }),
-      ).toBe('conflict');
+      ).toBe('applied');
     });
 
     it('returns "applied" for a non-terminal TW status that differs from local', () => {
@@ -157,12 +171,19 @@ describe('MilestoneSyncService', () => {
       ).toBe('applied');
     });
 
-    it('returns "applied" when local is terminal and TW has moved to a different non-terminal status', () => {
+    it('returns "skipped" when both sides already match (idempotent re-delivery)', () => {
       const { svc } = buildService();
-      // Edge case: TW rolled back (shouldn't happen, but guard it)
       expect(
         svc.applyTWMilestoneUpdate({ currentLocalStatus: 'pending', twStatus: 'pending' }),
       ).toBe('skipped');
+    });
+
+    it('returns "conflict" when both sides are at incompatible terminal states', () => {
+      const { svc } = buildService();
+      // local was cancelled while TW says approved — genuine divergence, needs manual review.
+      expect(
+        svc.applyTWMilestoneUpdate({ currentLocalStatus: 'cancelled', twStatus: 'approved' }),
+      ).toBe('conflict');
     });
   });
 

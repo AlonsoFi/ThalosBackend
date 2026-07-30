@@ -3,10 +3,9 @@ import { WebhooksController } from './webhooks.controller';
 import { WebhooksService } from './webhooks.service';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { AgreementsModule } from '../agreements/agreements.module';
-import { MilestoneSyncModule } from '../milestone-sync/milestone-sync.module';
 
 @Module({
-  imports: [NotificationsModule, AgreementsModule, MilestoneSyncModule],
+  imports: [NotificationsModule, AgreementsModule],
   controllers: [WebhooksController],
   providers: [WebhooksService],
 })

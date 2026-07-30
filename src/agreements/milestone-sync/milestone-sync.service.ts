@@ -113,21 +113,33 @@ export class MilestoneSyncService implements OnModuleInit {
   }
 
   /**
-   * Returns true when TW reports a terminal milestone status ('approved' | 'released')
-   * that the local DB has not yet reached — e.g. TW says 'approved' but local is 'pending'.
-   * The caller should treat this as a conflict and log / alert rather than silently overwriting.
+   * Returns true only when BOTH sides have already settled at a terminal milestone status
+   * but via divergent paths — e.g. local is 'cancelled' while TW reports 'approved'.
+   *
+   * "TW is terminal, local is not" is NOT a conflict: it is the normal TW→Thalos apply path
+   * that reconcileAgreement handles by writing the TW state into Thalos.
+   * This method returns false in that case so callers skip the conflict branch and
+   * fall through to `applyTWMilestoneUpdate` returning 'applied'.
+   *
+   * Special case: local='approved', TW='released' is a valid forward progression
+   * (approved → released is the standard completion sequence) and is not treated as a conflict.
    */
   detectConflict(localStatus: string, twStatus: string): boolean {
-    const terminal = new Set<string>(['approved', 'released']);
-    return terminal.has(twStatus) && !terminal.has(localStatus);
+    const terminal = new Set<string>(['approved', 'released', 'rejected', 'cancelled']);
+    if (!terminal.has(localStatus)) return false; // local hasn't settled — normal apply path
+    if (localStatus === twStatus) return false;   // already in sync
+    // approved → released is a valid forward step on TW, not a divergent conflict
+    if (localStatus === 'approved' && twStatus === 'released') return false;
+    return terminal.has(twStatus); // both settled in incompatible terminal states
   }
 
   /**
    * Evaluates whether a TW→Thalos milestone update should be applied.
    * Returns a discriminated result so the caller (sync engine / webhook handler) decides:
    *  - 'skipped'  — local already matches TW; no write needed (idempotent).
-   *  - 'conflict' — TW is at a terminal status the local DB hasn't reached; needs review.
+   *  - 'conflict' — both sides have settled at incompatible terminal states; needs manual review.
    *  - 'applied'  — safe to update local DB; caller must call AgreementsService.updateMilestone().
+   *                 This includes the normal case where TW is terminal but local hasn't caught up yet.
    */
   applyTWMilestoneUpdate(params: {
     currentLocalStatus: string;
